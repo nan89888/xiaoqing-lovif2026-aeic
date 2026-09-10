@@ -1,0 +1,17 @@
+{
+  "team": "XIAOQING",
+  "challenge": "LoViF 2026 Challenge on Ultra-Low Bitrate Image Compression",
+  "result_scope": "Final-test submission record; not a public test-data release.",
+  "codec_type": "AEIC-ME",
+  "checkpoint_key": "ME_ft16_fp16",
+  "checkpoint_relative_path": "weights/AEIC_ME_ft16_fp16.pkl",
+  "practical_entropy_coding": true,
+  "color_fix": false,
+  "compile_model": false,
+  "test_time_training_or_updates": false,
+  "recorded_y_quant_step": 1.13,
+  "source_support_for_y_quant_step": "unavailable in archived local source; do not claim bit-exact reproduction",
+  "test_image_count": 100,
+  "total_bitstream_bytes": 226877,
+  "weighted_bpp": 0.007921208421
+}

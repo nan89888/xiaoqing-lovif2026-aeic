@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/LuizScarlet/AEIC.git",
+  "commit": "7222c2c85e8db7ea0b829a139313ab7f4fdea88c",
+  "license": "MIT",
+  "purpose": "Public upstream implementation used as the reproducible baseline dependency."
+}

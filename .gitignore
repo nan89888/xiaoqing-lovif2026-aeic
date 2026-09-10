@@ -1,0 +1,17 @@
+# Downloaded upstream code and models
+upstream-aeic/
+weights/*
+!weights/.gitkeep
+
+# Generated artifacts and data
+outputs/
+data/
+*.bin
+*.png
+*.jpg
+*.jpeg
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

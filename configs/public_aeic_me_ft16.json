@@ -1,0 +1,11 @@
+{
+  "codec_type": "AEIC-ME",
+  "checkpoint": "weights/AEIC_ME_ft16_fp16.pkl",
+  "sd_turbo_path": "weights/sd-turbo",
+  "vae_decoder_path": "weights/halfDecoder.ckpt",
+  "use_practical_entropy_coding": true,
+  "color_fix": false,
+  "compile_model": false,
+  "enable_xformers_memory_efficient_attention": false,
+  "note": "Runnable public AEIC baseline. This configuration does not implement the archived final-test y_quant_step=1.13 source change."
+}
