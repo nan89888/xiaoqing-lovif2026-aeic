@@ -1,0 +1,552 @@
+diff --git a/src/AEIC_practical.py b/src/AEIC_practical.py
+index 50e18bf..89d7f39 100644
+--- a/src/AEIC_practical.py
++++ b/src/AEIC_practical.py
+@@ -14,6 +14,10 @@ class AEIC(OneStepDiffusionDecoder):
+         super().__init__(sd_path=sd_path, args=args)
+         self.add_unet_LoRA(lora_rank_unet=args.lora_rank_unet)
+         self.codec = PixelCodec(codec_type=args.codec_type)
++        self.codec.y_quant_step = float(getattr(args, "y_quant_step", 1.0))
++        if getattr(args, "big_encoder_50m", False):
++            from codec.base_module import AnalysisTransform_Big50M
++            self.codec.g_a = AnalysisTransform_Big50M()
+         self.load_AEIC_state_dict(args.codec_path, merge_LoRA=args.merge_LoRA)
+         self.set_inference_mode(args.compile_model)
+ 
+@@ -40,6 +44,8 @@ class AEIC(OneStepDiffusionDecoder):
+         pretrained_codec_keys = pretrained_weights["state_dict_codec"].keys()
+         for k in codec_random_weights.keys():
+             if k not in pretrained_codec_keys:
++                if k.startswith("y_adapter."):
++                    continue
+                 raise KeyError(f"Expecting codec key: {k} not found in provided state_dict_codec")
+             codec_random_weights[k] = pretrained_weights["state_dict_codec"][k]
+         self.codec.load_state_dict(codec_random_weights)
+@@ -103,4 +109,4 @@ class AEIC(OneStepDiffusionDecoder):
+         end_time = time.time()
+         dec_time = end_time - start_time
+         return x_hat, dec_time
+-    
+\ No newline at end of file
++    
+diff --git a/src/base_model.py b/src/base_model.py
+index e759c2e..6c97e98 100644
+--- a/src/base_model.py
++++ b/src/base_model.py
+@@ -2,6 +2,7 @@ import sys
+ sys.path.append("..")
+ 
+ import types
++from pathlib import Path
+ import torch
+ import torch.nn as nn
+ from peft import LoraConfig
+@@ -11,9 +12,9 @@ from my_utils.vaehook import VAEHook
+ 
+ from diffusers import AutoencoderKL, UNet2DConditionModel
+ from diffusers.models.autoencoders.vae import Decoder
+-from diffusers.models.unet_2d_blocks import CrossAttnDownBlock2D, CrossAttnUpBlock2D, DownBlock2D, UpBlock2D, UNetMidBlock2DCrossAttn
++from diffusers.models.unets.unet_2d_blocks import CrossAttnDownBlock2D, CrossAttnUpBlock2D, DownBlock2D, UpBlock2D, UNetMidBlock2DCrossAttn
+ from diffusers.models.resnet import ResnetBlock2D
+-from diffusers.models.transformer_2d import Transformer2DModel
++from diffusers.models.transformers.transformer_2d import Transformer2DModel
+ from diffusers.models.attention import BasicTransformerBlock
+ 
+ from custom_forward import MyUNet2DConditionModel_SD_forward, \
+@@ -30,19 +31,31 @@ from custom_forward import MyUNet2DConditionModel_SD_forward, \
+     my_lora_fwd
+ 
+ 
++
++
++def _load_pruned_runtime_state(module, path):
++    state = torch.load(path, map_location="cpu")
++    module.load_state_dict(state, strict=True)
++
+ class OneStepDiffusionDecoder(nn.Module):
+     def __init__(self, sd_path=None, args=None):
+         super().__init__()
+ 
++        pruned_runtime = Path(sd_path) / "pruned_unet_fp16.pt" if sd_path is not None else None
++        use_pruned_runtime = pruned_runtime is not None and pruned_runtime.exists()
++
+         # Stable Diffusion Models
+-        vae = AutoencoderKL.from_pretrained(sd_path, subfolder="vae")
+-        unet = UNet2DConditionModel.from_pretrained(sd_path, subfolder="unet")
++        if use_pruned_runtime:
++            vae = AutoencoderKL.from_config(str(Path(sd_path) / "vae_config.json"))
++            unet = UNet2DConditionModel.from_config(str(Path(sd_path) / "unet_config.json"))
++        else:
++            vae = AutoencoderKL.from_pretrained(sd_path, subfolder="vae")
++            unet = UNet2DConditionModel.from_pretrained(sd_path, subfolder="unet")
+         unet.to("cuda")
+         vae.to("cuda")
+         self.unet, self.vae = unet, vae
+ 
+         # Prune VAE Decoder
+-        ckpt_halfdecoder = torch.load(args.vae_decoder_path, weights_only=False)
+         decoder = Decoder(
+             in_channels=4,
+             out_channels=3,
+@@ -54,12 +67,14 @@ class OneStepDiffusionDecoder(nn.Module):
+             norm_type="group",
+             mid_block_add_attention=True
+             ).to('cuda')
+-        decoder_ckpt = {}
+-        for k, v in ckpt_halfdecoder["state_dict"].items():
+-            if "decoder" in k:
+-                new_k = k.replace("decoder.", "")
+-                decoder_ckpt[new_k] = v
+-        decoder.load_state_dict(decoder_ckpt, strict=True)
++        if not use_pruned_runtime:
++            ckpt_halfdecoder = torch.load(args.vae_decoder_path, weights_only=False)
++            decoder_ckpt = {}
++            for k, v in ckpt_halfdecoder["state_dict"].items():
++                if "decoder" in k:
++                    new_k = k.replace("decoder.", "")
++                    decoder_ckpt[new_k] = v
++            decoder.load_state_dict(decoder_ckpt, strict=True)
+         self.vae.decoder = decoder
+         self.vae.decoder.forward = types.MethodType(MyVAEDecoder_SD_forward, self.vae.decoder)
+         del self.vae.encoder, self.vae.quant_conv, self.vae.post_quant_conv
+@@ -111,6 +126,10 @@ class OneStepDiffusionDecoder(nn.Module):
+         temp_layer.bias.data = self.vae.decoder.conv_in.bias.data
+         self.vae.decoder.conv_in = temp_layer
+ 
++        self.pruned_runtime_path = Path(sd_path) if use_pruned_runtime else None
++        if use_pruned_runtime:
++            _load_pruned_runtime_state(self.vae.decoder, Path(sd_path) / "pruned_vae_decoder_fp16.pt")
++
+         if args.use_tiled_unet:
+             self.forbid_tiled_unet = False
+             self.latent_tiled_size = args.latent_tiled_size
+diff --git a/src/codec/base_entropy_coder.py b/src/codec/base_entropy_coder.py
+index f8de38f..a6c4c0b 100644
+--- a/src/codec/base_entropy_coder.py
++++ b/src/codec/base_entropy_coder.py
+@@ -90,12 +90,12 @@ class LowerBound(nn.Module):
+ 
+ 
+ class EntropyCoder():
+-    def __init__(self, ec_thread=True):
++    def __init__(self, ec_thread=True, stream_part=2):
+         super().__init__()
+ 
+         from .MLCodec_rans import RansEncoder, RansDecoder
+-        self.encoder = RansEncoder(ec_thread, 2)
+-        self.decoder = RansDecoder(2)
++        self.encoder = RansEncoder(ec_thread, stream_part)
++        self.decoder = RansDecoder(stream_part)
+ 
+     @staticmethod
+     def pmf_to_quantized_cdf(pmf, precision=16):
+@@ -149,7 +149,8 @@ class EntropyCoder():
+         return self.encoder.get_encoded_stream().tobytes()
+ 
+     def set_stream(self, stream):
+-        self.decoder.set_stream((np.frombuffer(stream, dtype=np.uint8)))
++        self._decoder_stream = np.frombuffer(stream, dtype=np.uint8).copy()
++        self.decoder.set_stream(self._decoder_stream)
+ 
+     def decode_stream(self, indexes, cdf_group_index):
+         rv = self.decoder.decode_stream(indexes.to(torch.int16).cpu().numpy(), cdf_group_index)
+diff --git a/src/codec/base_module.py b/src/codec/base_module.py
+index 60600dd..9cd2612 100644
+--- a/src/codec/base_module.py
++++ b/src/codec/base_module.py
+@@ -158,6 +158,36 @@ class AnalysisTransform_Moderate(nn.Module):
+         return x
+     
+ 
++
++
++class AnalysisTransform_Big50M(nn.Module):
++    def __init__(self, extra_blocks=76):
++        super().__init__()
++        self.base = AnalysisTransform_Moderate()
++        self.extra = nn.Sequential(*[StarBlock(320) for _ in range(extra_blocks)])
++
++    def forward(self, x):
++        return self.extra(self.base(x))
++
++
++class LatentResidualAdapter(nn.Module):
++    def __init__(self, channels=320, hidden=80, init_scale=0.05):
++        super().__init__()
++        self.scale = nn.Parameter(torch.tensor(float(init_scale)))
++        self.net = nn.Sequential(
++            nn.Conv2d(channels, hidden, 1),
++            nn.GELU(),
++            nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden),
++            nn.GELU(),
++            nn.Conv2d(hidden, channels, 1),
++        )
++        nn.init.zeros_(self.net[-1].weight)
++        nn.init.zeros_(self.net[-1].bias)
++
++    def forward(self, y):
++        return y + self.scale * self.net(y)
++
++
+ class SynthesisTransform(nn.Module):
+     def __init__(self, in_ch) -> None:
+         super().__init__()
+@@ -278,4 +308,4 @@ class TargetRateModule(nn.Module):
+             quantized_latent_bpp=quantized_latent_bpp.detach().mean(),
+             quantized_hyper_bpp=quantized_hyper_bpp.detach().mean(),
+         )
+-    
+\ No newline at end of file
++    
+diff --git a/src/codec/codec_practical.py b/src/codec/codec_practical.py
+index e6bb395..3500f15 100644
+--- a/src/codec/codec_practical.py
++++ b/src/codec/codec_practical.py
+@@ -21,6 +21,7 @@ def ste_round(x):
+ class PixelCodec(nn.Module):
+     def __init__(self, codec_type = "AEIC-ME"):
+         super().__init__()
++        self.y_quant_step = 1.0
+ 
+         if codec_type == "AEIC-ME":
+             M = 320
+@@ -36,6 +37,7 @@ class PixelCodec(nn.Module):
+             raise NotImplementedError("Codec type not supported")
+ 
+         self.y_channel = M
++        self.y_adapter = LatentResidualAdapter(M)
+         self.g_s = SynthesisTransform(in_ch=M)
+         self.h_a = HyperAnalysis(M=M)
+         self.h_s = HyperSynthesis(M=M)
+@@ -63,7 +65,7 @@ class PixelCodec(nn.Module):
+         z_h, z_w = math.ceil(y_h / 4), math.ceil(y_w / 4)
+         pad_h, pad_w = z_h * 4 - y_h, z_w * 4 - y_w
+ 
+-        y = self.g_a(x)
++        y = self.y_adapter(self.g_a(x))
+ 
+         y_padded = F.pad(y, pad=(0, pad_w, 0, pad_h), mode='constant')
+         z = self.h_a(y_padded)
+@@ -186,7 +188,8 @@ class PixelCodec(nn.Module):
+     @torch.no_grad()
+     def compress_group(self, y_q_list, scales_list):
+         y = [self.sequeeze(y_q) for y_q in y_q_list]
+-        scales = [self.sequeeze(scales) for scales in scales_list]
++        q = float(getattr(self, "y_quant_step", 1.0))
++        scales = [self.sequeeze(scales) / q for scales in scales_list]
+         y = [t.flatten() for t in y]
+         scales = [t.flatten() for t in scales]
+         sizes = [t.numel() for t in scales]
+@@ -200,12 +203,13 @@ class PixelCodec(nn.Module):
+     
+ 
+     def decompress_group_with_mask(self, scales, means, mask):
++        q = float(getattr(self, "y_quant_step", 1.0))
+         scales_squeeze = self.sequeeze(scales)
+         means_squeeze = self.sequeeze(means)
+-        indexes = self.my_build_indexes(scales_squeeze)
++        indexes = self.my_build_indexes(scales_squeeze / q)
+         latent_squeeze_q = self.entropy_coder.decode_stream(indexes.reshape(-1), self.y_cdf_group_index)
+         latent_squeeze_q = latent_squeeze_q.reshape(scales_squeeze.shape).to(scales_squeeze.device).to(scales_squeeze.dtype)
+-        latent_hat = self.unsequeeze_with_mask(latent_squeeze_q + means_squeeze, mask)
++        latent_hat = self.unsequeeze_with_mask(latent_squeeze_q * q + means_squeeze, mask)
+         return latent_hat
+     
+ 
+@@ -230,7 +234,7 @@ class PixelCodec(nn.Module):
+ 
+         indexes, z_offset = self.entropy_bottleneck.get_compress_info([1, self.y_channel // 2, z_h, z_w])
+ 
+-        y = self.g_a(x)
++        y = self.y_adapter(self.g_a(x))
+         y_padded = F.pad(y, (0, pad_w, 0, pad_h), mode="reflect")
+         z = self.h_a(y_padded)
+         z_q = torch.round(z - z_offset)
+@@ -249,12 +253,13 @@ class PixelCodec(nn.Module):
+             means = means_supp * mask
+             scales = scales_supp * mask
+             y_part = y * mask
+-            y_q = torch.round(y_part - means)
++            q = float(getattr(self, "y_quant_step", 1.0))
++            y_q = torch.round((y_part - means) / q)
+             y_q_list.append(y_q)
+             scales_list.append(scales)
+ 
+             if i < 3:
+-                y_hat = y_q + means
++                y_hat = y_q * q + means
+                 base = base * (1 - mask) + y_hat
+ 
+         y_q_0, y_q_1, y_q_2, y_q_3, indexes_0, indexes_1, indexes_2, indexes_3 = self.compress_group(y_q_list, scales_list)
+@@ -307,7 +312,7 @@ class PixelCodec(nn.Module):
+         updated = self.gaussian_conditional.update_scale_table(scale_table, force=force)
+         updated |= self.entropy_bottleneck.update(force=force)
+ 
+-        self.entropy_coder = EntropyCoder()
++        self.entropy_coder = EntropyCoder(ec_thread=False, stream_part=1)
+ 
+         self.y_quantized_cdf = self.gaussian_conditional.quantized_cdf.cpu().numpy()
+         self.y_cdf_length = self.gaussian_conditional.cdf_length.reshape(-1).int().cpu().numpy()
+diff --git a/src/compress.py b/src/compress.py
+index cc366cd..ddb672c 100644
+--- a/src/compress.py
++++ b/src/compress.py
+@@ -28,7 +28,7 @@ def compress_one_image(net, stream_path, img_name, x, ori_h, ori_w):
+     enc_time = net.compress(x)
+     strings = net.codec.entropy_coder.get_encoded_stream()
+     if not os.path.exists(stream_path): os.makedirs(stream_path)
+-    output = os.path.join(stream_path, img_name)
++    output = os.path.join(stream_path, img_name + ".bin")
+     with Path(output).open("wb") as f:
+         my_write_body(f, [ori_h, ori_w], strings)
+     size = filesize(output)
+@@ -37,7 +37,7 @@ def compress_one_image(net, stream_path, img_name, x, ori_h, ori_w):
+ 
+ 
+ def decompress_one_image(net, stream_path, img_name):
+-    output = os.path.join(stream_path, img_name)
++    output = os.path.join(stream_path, img_name + ".bin")
+     with Path(output).open("rb") as f:
+         strings, shape = my_read_body(f)
+     ori_h, ori_w = shape
+@@ -71,7 +71,7 @@ def main(args):
+         if is_xformers_available():
+             net.unet.enable_xformers_memory_efficient_attention()
+         else:
+-            raise ValueError("xformers is not available, please install it by running `pip install xformers`")
++            print("[Warning] xformers is not available; continuing without memory-efficient attention.")
+ 
+     transform = transforms.Compose([
+         transforms.ToTensor(),
+@@ -109,7 +109,11 @@ def main(args):
+             try:
+                 if args.use_practical_entropy_coding:
+                     bpp, enc_time = compress_one_image(net, args.bin_path, fname, img_padded, ori_h, ori_w)
+-                    out_img, dec_time = decompress_one_image(net, args.bin_path, fname)
++                    if args.encode_only:
++                        out_img = None
++                        dec_time = 0
++                    else:
++                        out_img, dec_time = decompress_one_image(net, args.bin_path, fname)
+                 else:
+                     x_hat, RateLossOutput = net.inference(img_padded, ori_h=ori_h, ori_w=ori_w)
+                     x_hat = x_hat[:, :, :ori_h, :ori_w]
+@@ -125,20 +129,21 @@ def main(args):
+                 else:
+                     raise
+ 
+-        output_pil = transforms.ToPILImage()(out_img[0].clamp(0.0, 1.0))
+-
+         print('[BPP]', bpp)
+         R.append(bpp)
+         if id >=4:
+             ENC.append(enc_time)
+             DEC.append(dec_time)
+ 
+-        if args.color_fix and ori_h * ori_w > 768 ** 2:
+-            img = (img * 0.5 + 0.5).float().cpu().detach()
+-            img_pil = transforms.ToPILImage()(img[0].clamp(0.0, 1.0))
+-            output_pil = adain_color_fix_quant(output_pil, img_pil, 16)
++        if out_img is not None:
++            output_pil = transforms.ToPILImage()(out_img[0].clamp(0.0, 1.0))
++
++            if args.color_fix and ori_h * ori_w > 768 ** 2:
++                img = (img * 0.5 + 0.5).float().cpu().detach()
++                img_pil = transforms.ToPILImage()(img[0].clamp(0.0, 1.0))
++                output_pil = adain_color_fix_quant(output_pil, img_pil, 16)
+ 
+-        output_pil.save(outf)
++            output_pil.save(outf)
+         torch.cuda.empty_cache()
+ 
+     print("\n========= AVG Results =========\n")
+diff --git a/src/cpp/py_rans/py_rans.cpp b/src/cpp/py_rans/py_rans.cpp
+index 39c5efb..51b601f 100644
+--- a/src/cpp/py_rans/py_rans.cpp
++++ b/src/cpp/py_rans/py_rans.cpp
+@@ -9,7 +9,7 @@
+ namespace py = pybind11;
+ 
+ RansEncoder::RansEncoder(bool multiThread, int streamPart) {
+-  bool useMultiThread = multiThread || streamPart > 1;
++  bool useMultiThread = multiThread;
+   for (int i = 0; i < streamPart; i++) {
+     if (useMultiThread) {
+       m_encoders.push_back(std::make_shared<RansEncoderLibMultiThread>());
+@@ -37,7 +37,7 @@ void RansEncoder::encode_with_indexes(const py::array_t<int16_t> &symbols,
+     auto copySize = sizeof(int16_t) * currSymbolSize;
+     auto vec_symbols = std::make_shared<std::vector<int16_t>>(currSymbolSize);
+     memcpy(vec_symbols->data(), symbols_ptr + currOffset, copySize);
+-    auto vec_indexes = std::make_shared<std::vector<int16_t>>(eachSymbolSize);
++    auto vec_indexes = std::make_shared<std::vector<int16_t>>(currSymbolSize);
+     memcpy(vec_indexes->data(), indexes_ptr + currOffset, copySize);
+     m_encoders[i]->encode_with_indexes(vec_symbols, vec_indexes,
+                                        cdf_group_index);
+@@ -129,9 +129,9 @@ py::array_t<uint8_t> RansEncoder::get_encoded_stream() {
+     overhead += ((encoderNumber - 1) * perStreamHeader);
+   }
+ 
+-  py::array_t<uint8_t> stream(totalSize + overhead);
+-  py::buffer_info stream_buf = stream.request();
+-  uint8_t *stream_ptr = static_cast<uint8_t *>(stream_buf.ptr);
++  auto stream_vec = new std::vector<uint8_t>(totalSize + overhead);
++  uint8_t *stream_ptr = stream_vec->data();
++  memset(stream_ptr, 0, stream_vec->size());
+ 
+   uint8_t flag = static_cast<uint8_t>(((encoderNumber - 1) << 4) +
+                                       (perStreamHeader == 2 ? 1 : 0));
+@@ -152,7 +152,14 @@ py::array_t<uint8_t> RansEncoder::get_encoded_stream() {
+     memcpy(stream_ptr + offset, results[i].data(), nbytes);
+     offset += nbytes;
+   }
+-  return stream;
++
++  py::capsule free_when_done(stream_vec, [](void *p) {
++    delete reinterpret_cast<std::vector<uint8_t> *>(p);
++  });
++  return py::array_t<uint8_t>(
++      {static_cast<py::ssize_t>(stream_vec->size())},
++      {static_cast<py::ssize_t>(sizeof(uint8_t))},
++      stream_vec->data(), free_when_done);
+ }
+ 
+ void RansEncoder::reset() {
+@@ -169,14 +176,23 @@ RansDecoder::RansDecoder(int streamPart) {
+ 
+ void RansDecoder::set_stream(const py::array_t<uint8_t> &encoded) {
+   py::buffer_info encoded_buf = encoded.request();
++  if (encoded.size() < 1) {
++    throw std::runtime_error("Empty encoded rANS stream");
++  }
+   uint8_t flag = *(static_cast<uint8_t *>(encoded_buf.ptr));
+   int numberOfStreams = (flag >> 4) + 1;
++  if (numberOfStreams > static_cast<int>(m_decoders.size())) {
++    throw std::runtime_error("Encoded stream contains more rANS parts than decoder supports");
++  }
+ 
+   uint8_t perStreamSizeLength = (flag & 0x0f) == 1 ? 2 : 4;
+   std::vector<uint32_t> streamSizes;
+   int offset = 1;
+   int totalSize = 0;
+   for (int i = 0; i < numberOfStreams - 1; i++) {
++    if (offset + perStreamSizeLength > static_cast<int>(encoded.size())) {
++      throw std::runtime_error("Truncated rANS stream header");
++    }
+     uint8_t *currPos = static_cast<uint8_t *>(encoded_buf.ptr) + offset;
+     if (perStreamSizeLength == 2) {
+       uint16_t streamSize = *(reinterpret_cast<uint16_t *>(currPos));
+@@ -190,8 +206,15 @@ void RansDecoder::set_stream(const py::array_t<uint8_t> &encoded) {
+       totalSize += streamSize;
+     }
+   }
+-  streamSizes.push_back(static_cast<int>(encoded.size()) - offset - totalSize);
++  int lastStreamSize = static_cast<int>(encoded.size()) - offset - totalSize;
++  if (lastStreamSize < 0) {
++    throw std::runtime_error("Invalid rANS stream sizes");
++  }
++  streamSizes.push_back(lastStreamSize);
+   for (int i = 0; i < numberOfStreams; i++) {
++    if (offset + static_cast<int>(streamSizes[i]) > static_cast<int>(encoded.size())) {
++      throw std::runtime_error("Truncated rANS stream payload");
++    }
+     auto stream = std::make_shared<std::vector<uint8_t>>(streamSizes[i]);
+     memcpy(stream->data(), static_cast<uint8_t *>(encoded_buf.ptr) + offset,
+            streamSizes[i]);
+@@ -226,18 +249,24 @@ RansDecoder::decode_stream(const py::array_t<int16_t> &indexes,
+     results.push_back(result);
+   }
+ 
+-  py::array_t<int16_t> output(indexes.size());
+-  py::buffer_info buf = output.request();
++  auto output_vec = new std::vector<int16_t>(indexes.size());
+   int offset = 0;
+   for (int i = 0; i < decoderNum; i++) {
+     std::vector<int16_t> result = results[i].get();
+     int resultSize = static_cast<int>(result.size());
+     int copySize = sizeof(int16_t) * resultSize;
+-    memcpy(static_cast<int16_t *>(buf.ptr) + offset, result.data(), copySize);
++    memcpy(output_vec->data() + offset, result.data(), copySize);
+     offset += resultSize;
+   }
+ 
+-  return output;
++
++  py::capsule free_when_done(output_vec, [](void *p) {
++    delete reinterpret_cast<std::vector<int16_t> *>(p);
++  });
++  return py::array_t<int16_t>(
++      {static_cast<py::ssize_t>(output_vec->size())},
++      {static_cast<py::ssize_t>(sizeof(int16_t))},
++      output_vec->data(), free_when_done);
+ }
+ 
+ int RansDecoder::add_cdf(const py::array_t<int32_t> &cdfs,
+diff --git a/src/cpp/rans/rans.cpp b/src/cpp/rans/rans.cpp
+index 14dc46c..07f2d21 100644
+--- a/src/cpp/rans/rans.cpp
++++ b/src/cpp/rans/rans.cpp
+@@ -162,11 +162,14 @@ void RansEncoderLib::flush() {
+   RansState rans;
+   RansEncInit(&rans);
+ 
+-  std::vector<uint8_t> output(_syms.size()); // too much space ?
++  // rANS writes backwards and flushes a 4-byte final state. Some streams can
++  // also emit more than one byte for bypass symbols, so reserve a small guard.
++  std::vector<uint8_t> output(_syms.size() * 2 + 64);
+   uint8_t *ptrEnd = output.data() + output.size();
+   uint8_t *ptr = ptrEnd;
+   assert(ptr != nullptr);
+ 
++
+   for (auto it = _syms.rbegin(); it < _syms.rend(); it++) {
+     const RansSymbol sym = *it;
+ 
+diff --git a/src/my_utils/testing_utils.py b/src/my_utils/testing_utils.py
+index adb8f78..0b77d9e 100644
+--- a/src/my_utils/testing_utils.py
++++ b/src/my_utils/testing_utils.py
+@@ -1,5 +1,14 @@
+ import argparse
+ 
++def str2bool(v):
++    if isinstance(v, bool):
++        return v
++    if str(v).lower() in ("yes", "true", "t", "1", "y"):
++        return True
++    if str(v).lower() in ("no", "false", "f", "0", "n"):
++        return False
++    raise argparse.ArgumentTypeError("Boolean value expected.")
++
+ def parse_args_testing(input_args=None):
+ 
+     parser = argparse.ArgumentParser()
+@@ -21,13 +30,16 @@ def parse_args_testing(input_args=None):
+     parser.add_argument("--lora_rank_unet", default=32, type=int)
+ 
+     # testing details
+-    parser.add_argument("--enable_xformers_memory_efficient_attention", default=True, help="Whether or not to use xformers.")
+-    parser.add_argument("--color_fix", default=True, help="Whether or not to use color fix.")
++    parser.add_argument("--enable_xformers_memory_efficient_attention", type=str2bool, default=True, help="Whether or not to use xformers.")
++    parser.add_argument("--color_fix", type=str2bool, default=True, help="Whether or not to use color fix.")
+     parser.add_argument("--use_practical_entropy_coding", default=False, action="store_true")
+-    parser.add_argument("--merge_LoRA", default=True)
+-    parser.add_argument("--compile_model", default=True)
+-    parser.add_argument("--use_tiled_vae", default=True)
+-    parser.add_argument("--use_tiled_unet", default=True)
++    parser.add_argument("--encode_only", default=False, action="store_true", help="Only write bitstreams; skip local decode/reconstruction.")
++    parser.add_argument("--merge_LoRA", type=str2bool, default=True)
++    parser.add_argument("--compile_model", type=str2bool, default=True)
++    parser.add_argument("--big_encoder_50m", type=str2bool, default=False)
++    parser.add_argument("--y_quant_step", type=float, default=1.0, help="Fixed practical y-latent quantization step. Values >1 reduce rate.")
++    parser.add_argument("--use_tiled_vae", type=str2bool, default=True)
++    parser.add_argument("--use_tiled_unet", type=str2bool, default=True)
+     parser.add_argument("--vae_decoder_tiled_size", type=int, default=160, help="Tiled VAE decoder tile size. Switch to 128 if OOM.")
+     parser.add_argument("--latent_tiled_size", type=int, default=96, help="Tiled latent tile size.")
+     parser.add_argument("--latent_tiled_overlap", type=int, default=32, help="Tiled latent tile overlap.")
+@@ -37,4 +49,4 @@ def parse_args_testing(input_args=None):
+     else:
+         args = parser.parse_args()
+ 
+-    return args
+\ No newline at end of file
++    return args

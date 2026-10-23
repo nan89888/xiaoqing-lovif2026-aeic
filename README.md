@@ -8,18 +8,21 @@ The final-test submission used an AEIC-ME codec with the `ME_ft16_fp16` checkpoi
 
 This is a public reproduction package, not a redistribution of the official test set, reconstructed test images, or submitted bitstreams. It contains:
 
+- the recovered AEIC inference runtime and native entropy-coder source;
+- fixed recovered-runtime and original public-baseline runners;
+- source/bitstream/archive checksums and observed environment versions;
 - a pinned setup script for the public AEIC implementation;
 - the fixed final-test configuration and checkpoint checksums;
 - an audited runner for the publicly released AEIC baseline; and
 - a BPP audit utility that counts the actual bytes in a directory of bitstreams.
 
-The original competition decoder package contained the final checkpoint and dependencies. The official test images and its 100 submitted bitstreams are intentionally excluded.
+The original competition decoder package contained the final checkpoint and dependencies. The source-recovery supplement is documented below. The official test images and its 100 submitted bitstreams are intentionally excluded.
 
-### Important reproducibility limitation
+### Source recovery update (2026-10-23)
 
-The archived final-test record specifies `y_quant_step=1.13`. The local source modification that exposed this parameter was not retained in the competition archive. The pinned public upstream AEIC repository does not expose it. Consequently, this repository **does not claim bit-exact reproduction of the final-test bitstreams**. It provides a runnable, documented AEIC baseline and the exact recorded final configuration for auditing and future completion.
+The missing `y_quant_step=1.13` implementation was recovered from the active server checkout. This repository now preserves the inference runtime and native entropy-coder sources, source checksums, a fixed runner and observed environment versions. See [recovered-source instructions](docs/RECOVERED_SOURCE.md).
 
-Do not report a new score from this repository as the official challenge result. A future release can become bit-exact only after the missing source change is recovered and independently verified against the archived decoder and bitstreams.
+Full final-test bit-exact equivalence remains unverified. The recovered active source and the historical submitted decoder ZIP have distinct provenance. The original `v1.0.0` baseline package remains in Git history and its checkpoint Release asset is unchanged.
 
 ## Final submission record
 
@@ -32,7 +35,7 @@ Do not report a new score from this repository as the official challenge result.
 | Color fix | disabled |
 | Model compilation | disabled |
 | Test-time training / updates | none |
-| Recorded `y_quant_step` | 1.13 (source change unavailable; see limitation above) |
+| Recorded `y_quant_step` | 1.13 (recovered source available; exact reproduction pending) |
 | Test images | 100 PNG images, not released here |
 | Total bitstream bytes | 226,877 |
 | Weighted BPP | 0.007921208421 |
@@ -42,7 +45,7 @@ Do not report a new score from this repository as the official challenge result.
 The commands below reproduce the publicly released AEIC inference path. A Linux environment with a CUDA-capable GPU is expected.
 
 ```bash
-git clone https://github.com/<YOUR_GITHUB_USER>/xiaoqing-lovif2026-aeic.git
+git clone https://github.com/nan89888/xiaoqing-lovif2026-aeic.git
 cd xiaoqing-lovif2026-aeic
 bash scripts/fetch_aeic.sh
 conda create -n xiaoqing-aeic python=3.10 -y
@@ -57,12 +60,24 @@ bash scripts/run_public_aeic_me_ft16.sh /path/to/png_inputs outputs/run
 python scripts/audit_bpp.py --bitstream-dir outputs/run/bitstream
 ```
 
-`run_public_aeic_me_ft16.sh` invokes the pinned public AEIC source with practical entropy coding. It deliberately does not pretend to implement the unrecovered `y_quant_step=1.13` change.
+`run_public_aeic_me_ft16.sh` invokes the pinned public AEIC source with practical entropy coding. The recovered-source path has separate setup and validation instructions:
+
+```bash
+python -m pip install -r requirements-recovered.txt
+bash scripts/build_recovered_entropy.sh
+python -m unittest discover -s tests -v
+bash scripts/run_recovered_aeic_me_ft16.sh /path/to/png_inputs outputs/recovered-run
+```
+
+See [archive coverage](docs/ARCHIVE_COVERAGE.md) for the public/private backup boundary.
 
 ## Repository layout
 
 ```text
-configs/                 Recorded final-test and public-run configurations
+recovered-aeic/          Recovered inference and C++ runtime source
+patches/                 Upstream-relative source recovery patch
+tests/                   CPU runtime and entropy checks
+configs/                 Final/public/recovered configurations and audit manifests
 docs/                    Release, provenance, and reproducibility notes
 scripts/                 Setup, execution, and rate-audit tools
 weights/                 Empty after clone; populate from a GitHub Release asset

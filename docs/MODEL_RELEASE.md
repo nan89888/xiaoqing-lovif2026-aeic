@@ -1,6 +1,6 @@
 # Model Release Assets
 
-This repository intentionally keeps all model files out of Git history. Upload the following file as a GitHub Release asset after creating the repository:
+The model is available as a [v1.0.0 GitHub Release asset](https://github.com/nan89888/xiaoqing-lovif2026-aeic/releases/tag/v1.0.0). Model files are kept outside Git history. The verified attachment is:
 
 ```text
 xiaoqing-lovif2026-me-ft16-checkpoint-20260910.zip
@@ -21,4 +21,4 @@ sha256sum weights/AEIC_ME_ft16_fp16.pkl
 
 The runtime also requires SD-Turbo and `halfDecoder.ckpt`. They are third-party files and are not redistributed here. Obtain them under their original licenses from the sources linked in the main README. The known SHA256 values of the copies used in the code-submission archive are recorded in [`WEIGHT_CHECKSUMS.md`](WEIGHT_CHECKSUMS.md).
 
-Before publishing this checkpoint, the team should confirm it is authorized to redistribute the derived model weight under the relevant upstream licenses. Do not upload the 3.54 GB decoder-submission ZIP as a GitHub asset: it includes unrelated experiments and exceeds the scope of this public package.
+The 2026-10-23 audit downloaded this attachment and verified both its GitHub-provided ZIP digest and the extracted checkpoint checksum against the server copy. The recovered-source prerelease adds source and audit records; it reuses this existing model asset. Complete decoder-submission ZIPs remain privately retained because they also contain third-party weights and experimental branches; their checksums are recorded in `configs/private_archive_checksums.json`.

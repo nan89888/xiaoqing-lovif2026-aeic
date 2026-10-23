@@ -1,0 +1,139 @@
+{
+  "recovery_date": "2026-10-23",
+  "upstream_repository": "https://github.com/LuizScarlet/AEIC.git",
+  "upstream_checkout_head": "ff4031b0f5826ae88d3de87e5cf5c03c995faf5e",
+  "scope": "Verbatim inference runtime and native entropy-coder sources recovered from the active server checkout; training-only files, binaries, weights and data are excluded.",
+  "relation_to_final_submission": "Candidate recovered implementation. Full final-test bit-exact reproduction has not been verified. The submitted July 11 hybrid package is a separate preserved artifact.",
+  "files": [
+    {
+      "path": "LICENSE",
+      "bytes": 1068,
+      "sha256": "83ed66e2cf9e4ff9db4bf7e0c5f255d3afb4164e33f430708e01b611ab8ebad5"
+    },
+    {
+      "path": "src/AEIC_practical.py",
+      "bytes": 4330,
+      "sha256": "b9fc84fe3d1f3e5789b7c8c3e93f1eee54e35a85ff037a5e8fbea417b397f70a"
+    },
+    {
+      "path": "src/base_model.py",
+      "bytes": 12478,
+      "sha256": "39d1adbccc338953ad7008d3f2ca039746952f7be0db599ffb7706f5a2bc9def"
+    },
+    {
+      "path": "src/custom_forward.py",
+      "bytes": 7030,
+      "sha256": "87a075ff32d9b0bde617cea80f197895bfacb28ff49abe66b1a789cb755d4987"
+    },
+    {
+      "path": "src/compress.py",
+      "bytes": 5853,
+      "sha256": "bff991030d9fce3cd7a85d756082039c5fe4809fc7cc40cf8191e51270658342"
+    },
+    {
+      "path": "src/color_fix.py",
+      "bytes": 2479,
+      "sha256": "21b6870f9e0b9a86e0fca199e5490bff67596f7cc8195f94a8e60aa9334e160d"
+    },
+    {
+      "path": "src/codec/base_entropy_coder.py",
+      "bytes": 30752,
+      "sha256": "7b661ba1ed492774e14b926d80254824b587159c344d78b7546e647947dc2ec3"
+    },
+    {
+      "path": "src/codec/base_module.py",
+      "bytes": 9642,
+      "sha256": "e659e53019e800d063a54e50e96a05c505f874346729f27f45b8115c8365d917"
+    },
+    {
+      "path": "src/codec/codec_practical.py",
+      "bytes": 13240,
+      "sha256": "4efc9fdc6804c09b21244c1fe61442adf9bd4787f1fa8c88799196ae3d562b68"
+    },
+    {
+      "path": "src/my_utils/testing_utils.py",
+      "bytes": 2733,
+      "sha256": "6445b5053322aaf704152b7eb7633df2fe838c24844b20f195446d4a5bcb6b03"
+    },
+    {
+      "path": "src/my_utils/compress_utils.py",
+      "bytes": 2970,
+      "sha256": "c7924217601d69b0748dac25f24309d983691a72e43a6f98d99c6b016aa01e19"
+    },
+    {
+      "path": "src/my_utils/devices.py",
+      "bytes": 3315,
+      "sha256": "2b51bc63afd173cc129459258b1b334c7b0ec1f9c36e44db9f2213412b6d4f1a"
+    },
+    {
+      "path": "src/my_utils/vaehook.py",
+      "bytes": 31384,
+      "sha256": "250c3c3600fd9d4bd0cd82eea8170f530c067cefa817e23aa0dbce14a1d864cb"
+    },
+    {
+      "path": "src/cpp/3rdparty/CMakeLists.txt",
+      "bytes": 101,
+      "sha256": "7d4c84d3a126bb564cb34dadc1fba9cf18fd08fde04eeddff5b4a314a7b7a4e9"
+    },
+    {
+      "path": "src/cpp/3rdparty/pybind11/CMakeLists.txt",
+      "bytes": 886,
+      "sha256": "f44f9515487dbcec493a900806c57d01f765aca754cb7cd624bae5d81e7680ac"
+    },
+    {
+      "path": "src/cpp/3rdparty/pybind11/CMakeLists.txt.in",
+      "bytes": 1123,
+      "sha256": "f14d71058caef7ea25c09af4d8c01a32fca0f7dddc0c8bff3ae42a81f660b43c"
+    },
+    {
+      "path": "src/cpp/CMakeLists.txt",
+      "bytes": 599,
+      "sha256": "84c7b4119a9f4fa20e4c4fdbb35de066403c9323369d5e9dd1d6b4673b57b2eb"
+    },
+    {
+      "path": "src/cpp/ops/CMakeLists.txt",
+      "bytes": 662,
+      "sha256": "28011a9a20c993e07739dcae6ddbea053638b56104fd736635b63901aa11eef1"
+    },
+    {
+      "path": "src/cpp/ops/ops.cpp",
+      "bytes": 2780,
+      "sha256": "d771daa4da7dc1176ad1ec2fc511f78966840d471879ddd625402888ea8ca410"
+    },
+    {
+      "path": "src/cpp/py_rans/CMakeLists.txt",
+      "bytes": 746,
+      "sha256": "69ab934cfcfe5fca7218d04a06bdaa5837bb48bb242eaf8b2dc30ed9f6221968"
+    },
+    {
+      "path": "src/cpp/py_rans/py_rans.cpp",
+      "bytes": 13176,
+      "sha256": "5b4f61a609932c6ac2f7d0d8dc4a67a964efaa8a620359c20c0705d8b7ad9ada"
+    },
+    {
+      "path": "src/cpp/py_rans/py_rans.h",
+      "bytes": 2618,
+      "sha256": "261839ac7319de59ff24b431d8e6a6ea82005833911ca7e8e990bc71371a3d72"
+    },
+    {
+      "path": "src/cpp/rans/CMakeLists.txt",
+      "bytes": 468,
+      "sha256": "af5dff61b964e2b0e6953f277204500b7e0c90b3daeb630494e5725a8fa0ef34"
+    },
+    {
+      "path": "src/cpp/rans/rans.cpp",
+      "bytes": 11107,
+      "sha256": "0ff809c49d6763500d715412e48bf848f69c7e8fb131d8ffb3cec4be6a9a8a49"
+    },
+    {
+      "path": "src/cpp/rans/rans.h",
+      "bytes": 4533,
+      "sha256": "205528617b3b86cb8d0cda61701e772f7264e69eedb27dd546cf96ce155e77ca"
+    },
+    {
+      "path": "src/cpp/rans/rans_byte.h",
+      "bytes": 5469,
+      "sha256": "585b070b12ea8638ecadaf50980e982552e8f4f20ea237fec480892dc09e247a"
+    }
+  ]
+}

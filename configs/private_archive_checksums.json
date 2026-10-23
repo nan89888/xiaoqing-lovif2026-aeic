@@ -1,0 +1,22 @@
+{
+  "archives": [
+    {
+      "name": "lovif_aeic_fallback_6codec_69p160_20260708_012215.zip",
+      "bytes": 3646910336,
+      "sha256": "bea72514a8db54201bf53bdc4e4e5edc53970bfe769b9dfddcce546a021519c0",
+      "storage": "retained privately; not a GitHub Release asset"
+    },
+    {
+      "name": "lovif_hybrid69p893_decoder_code_submission_20260711.zip",
+      "bytes": 3802428574,
+      "sha256": "205ec2a3927202299317fd325a3e0c7cb36ad2678e03631dbd07fd48236e92be",
+      "storage": "retained privately; not a GitHub Release asset"
+    },
+    {
+      "name": "lovif_xiaoqing_final_test_MEft16_q1p13_20260713.zip",
+      "bytes": 356863068,
+      "sha256": "c56b5cc316a5200ff0c7b3bebc842ba97354613e2729927075c300f7c8bb0e4d",
+      "storage": "retained privately; not a GitHub Release asset"
+    }
+  ]
+}

@@ -15,3 +15,9 @@ data/
 __pycache__/
 *.py[cod]
 .venv/
+
+# Rebuilt native extensions
+recovered-aeic/src/build/
+*.so
+*.dylib
+*.pyd

@@ -1,0 +1,19 @@
+{
+  "source_directory": "recovered-aeic",
+  "codec_type": "AEIC-ME",
+  "checkpoint": "weights/AEIC_ME_ft16_fp16.pkl",
+  "sd_turbo_path": "weights/sd-turbo",
+  "vae_decoder_path": "weights/halfDecoder.ckpt",
+  "use_practical_entropy_coding": true,
+  "y_quant_step": 1.13,
+  "color_fix": false,
+  "compile_model": false,
+  "enable_xformers_memory_efficient_attention": false,
+  "merge_LoRA": true,
+  "use_tiled_vae": true,
+  "use_tiled_unet": true,
+  "vae_decoder_tiled_size": 160,
+  "latent_tiled_size": 96,
+  "latent_tiled_overlap": 32,
+  "note": "Recorded final configuration with recovered runtime. Full final-test bit-exact equivalence remains unverified."
+}

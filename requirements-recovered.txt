@@ -1,0 +1,12 @@
+# Observed server inference versions on 2026-10-23; Python 3.12.13.
+# Select a PyTorch wheel suitable for your CUDA driver.
+torch==2.12.0
+torchvision==0.27.0
+diffusers==0.37.1
+peft==0.19.1
+transformers==4.57.6
+accelerate==1.13.0
+huggingface-hub==0.36.2
+numpy==2.4.6
+scipy==1.17.1
+Pillow==12.2.0

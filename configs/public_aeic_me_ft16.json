@@ -7,5 +7,5 @@
   "color_fix": false,
   "compile_model": false,
   "enable_xformers_memory_efficient_attention": false,
-  "note": "Runnable public AEIC baseline. This configuration does not implement the archived final-test y_quant_step=1.13 source change."
+  "note": "Original public-upstream baseline configuration; use scripts/run_recovered_aeic_me_ft16.sh for the recovered y_quant_step=1.13 path."
 }

@@ -33,4 +33,4 @@ python "$AEIC_DIR/src/compress.py" \
   --enable_xformers_memory_efficient_attention False \
   --color_fix False
 
-echo "Public AEIC run completed. This command does not implement the unrecovered final-test y_quant_step=1.13 patch."
+echo "Public AEIC run completed. Use run_recovered_aeic_me_ft16.sh for the separately recovered y_quant_step=1.13 runtime."

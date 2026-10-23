@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-23",
+  "platform": "Linux x86_64",
+  "python": "3.12.13",
+  "compiler": "GNU C++ 9.3.0",
+  "source_manifest": "configs/recovered_source_manifest.json",
+  "source_files_verified": 26,
+  "native_extensions": "MLCodec_CXX and MLCodec_rans rebuilt from recovered source in an isolated directory",
+  "pybind11": "2.10.4; reused a cached source checkout for the isolated build",
+  "device": "CPU; CUDA devices hidden for tests",
+  "unittest": {
+    "tests": 4,
+    "failures": 0,
+    "errors": 0,
+    "checks": [
+      "False Boolean CLI values and y_quant_step=1.13",
+      "hyperprior plus four context-group stream order",
+      "signed/escape symbols and decoder stream lifetime",
+      "quantization, scale indexes and latent reconstruction at q=1.0,1.13,1.5"
+    ]
+  },
+  "not_verified": [
+    "full GPU model inference",
+    "bit-exact equivalence to all 100 original final-test bitstreams",
+    "pixel equivalence to final-test reconstructions"
+  ]
+}
