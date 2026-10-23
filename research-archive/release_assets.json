@@ -1,0 +1,16 @@
+{
+  "tag": "v1.2.0-research-archive",
+  "prerelease": true,
+  "files": [
+    {
+      "name": "xiaoqing-lovif2026-research-records-20261023.tar.gz",
+      "bytes": 9509914,
+      "sha256": "851977665727ab163f0c4c44056f8d939fe32cf420f1b65f233eac377cdd7fa0"
+    },
+    {
+      "name": "xiaoqing-lovif2026-hybrid-models-20261023.tar.gz",
+      "bytes": 155261124,
+      "sha256": "40bf00ff3ea91c4c7f78b65a62263d37113b7b243fa6a744e0c23b1c1eb66ae1"
+    }
+  ]
+}

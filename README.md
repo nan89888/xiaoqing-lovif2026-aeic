@@ -24,6 +24,10 @@ The missing `y_quant_step=1.13` implementation was recovered from the active ser
 
 Full final-test bit-exact equivalence remains unverified. The recovered active source and the historical submitted decoder ZIP have distinct provenance. The original `v1.0.0` baseline package remains in Git history and its checkpoint Release asset is unchanged.
 
+### Historical research archive
+
+Training/selection/evaluation scripts, configurations, metrics and corrected audit notes are preserved in the [research archive](research-archive/README.md), alongside five selected historical refiner models and five codebooks. These development artifacts are distinct from the final pure ME-ft16 result. See [retention decisions](docs/RETENTION_DECISIONS.md) for the server-cleanup boundary.
+
 ## Final submission record
 
 | Field | Value |

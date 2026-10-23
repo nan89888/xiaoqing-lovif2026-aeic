@@ -1,0 +1,95 @@
+{
+  "scope": "Historical July hybrid development package; distinct from the final pure ME-ft16 test result.",
+  "files": [
+    {
+      "path": "hybrid69p893/models/outputs__current69p841_rvq1_b384f8_k64x1_train512_20260711__codebook.pkl",
+      "original_bytes": 49352,
+      "original_sha256": "2f0e4f1fd424caa027796c4589b919fa19fc4372e41f7af4830ab2dc77aaf6e1",
+      "release_bytes": 49352,
+      "release_sha256": "2f0e4f1fd424caa027796c4589b919fa19fc4372e41f7af4830ab2dc77aaf6e1",
+      "preparation": "Verbatim copy; no private path strings found in pickle inspection.",
+      "experiment_source_path": "outputs/current69p841_rvq1_b384f8_k64x1_train512_20260711/codebook.pkl"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__current69p841_rvq1_b512f8_k64x1_train512_20260711__codebook.pkl",
+      "original_bytes": 49352,
+      "original_sha256": "f939e0a0a298cd05af92c22cfffcd56738d48108f6bf294eb11d984e6ef5b847",
+      "release_bytes": 49352,
+      "release_sha256": "f939e0a0a298cd05af92c22cfffcd56738d48108f6bf294eb11d984e6ef5b847",
+      "preparation": "Verbatim copy; no private path strings found in pickle inspection.",
+      "experiment_source_path": "outputs/current69p841_rvq1_b512f8_k64x1_train512_20260711/codebook.pkl"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__current69p841_rvq2_b256f8_k64x2_train512_20260711__codebook.pkl",
+      "original_bytes": 98552,
+      "original_sha256": "5f04b0e3f3ee10a2a16c45a875340ab41a215998e352c46483bb466939e06e03",
+      "release_bytes": 98552,
+      "release_sha256": "5f04b0e3f3ee10a2a16c45a875340ab41a215998e352c46483bb466939e06e03",
+      "preparation": "Verbatim copy; no private path strings found in pickle inspection.",
+      "experiment_source_path": "outputs/current69p841_rvq2_b256f8_k64x2_train512_20260711/codebook.pkl"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__current69p841_rvq2_b384f8_k64x2_train512_20260711__codebook.pkl",
+      "original_bytes": 98552,
+      "original_sha256": "2199b26ad1189f069e4cbdcf60030de68087443ef1132ec317fbfcb46a6dbca5",
+      "release_bytes": 98552,
+      "release_sha256": "2199b26ad1189f069e4cbdcf60030de68087443ef1132ec317fbfcb46a6dbca5",
+      "preparation": "Verbatim copy; no private path strings found in pickle inspection.",
+      "experiment_source_path": "outputs/current69p841_rvq2_b384f8_k64x2_train512_20260711/codebook.pkl"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__current69p841_rvq2_b384f8_k64x2_train512_20260711__refiner_c192b16_rs014_from_rvq5_step4500_to6000__vq_refiner_step5000.pt",
+      "original_bytes": 42585759,
+      "original_sha256": "1d5757fdb2c561fb7ff7f824834f40a6f5ac41bc8b55acc74b9ed614376d3fdc",
+      "release_bytes": 42597810,
+      "release_sha256": "3d7cfd46a8b2019c9343b7856e8525be874ae8b8014b0f22088558dbc472ecfe",
+      "preparation": "Local-path metadata normalized; unused __main__.train callback reference, if present, stored as its name. All tensor values/dtypes/shapes verified identical.",
+      "experiment_source_path": "outputs/current69p841_rvq2_b384f8_k64x2_train512_20260711/refiner_c192b16_rs014_from_rvq5_step4500_to6000/vq_refiner_step5000.pt"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__current69p841_rvq3_b256f8_k64x3_train512_20260711__codebook.pkl",
+      "original_bytes": 147741,
+      "original_sha256": "2d2bf4abcca767da4382055e092d3c6400da6b8aaf87ec4e7de2357715d30217",
+      "release_bytes": 147741,
+      "release_sha256": "2d2bf4abcca767da4382055e092d3c6400da6b8aaf87ec4e7de2357715d30217",
+      "preparation": "Verbatim copy; no private path strings found in pickle inspection.",
+      "experiment_source_path": "outputs/current69p841_rvq3_b256f8_k64x3_train512_20260711/codebook.pkl"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__refiner_train_ME16_available1024_c160b14_rs008__refiner_step8000.pt",
+      "original_bytes": 25896597,
+      "original_sha256": "b6bc855a5c46a870a9acd3b0f47cd4f7678880ac35225dd8f5dace0c88a7db25",
+      "release_bytes": 25902036,
+      "release_sha256": "93487e18b364494ed7229131a4bbcf7d34b0df682aafc17805dc70e8ce2f204d",
+      "preparation": "Local-path metadata normalized; unused __main__.train callback reference, if present, stored as its name. All tensor values/dtypes/shapes verified identical.",
+      "experiment_source_path": "outputs/refiner_train_ME16_available1024_c160b14_rs008/refiner_step8000.pt"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__refiner_train_ME32_subset512_c128b12_rs012__refiner_step5000.pt",
+      "original_bytes": 14227097,
+      "original_sha256": "43ebc882957402ba5cc5e2a542316771d9a800edf3873b636a0e68eb04e37061",
+      "release_bytes": 14228238,
+      "release_sha256": "692c08e3347fa0d9956293f1e282dd2f7ccc1c9527776e1424d679c2961634ea",
+      "preparation": "Local-path metadata normalized; unused __main__.train callback reference, if present, stored as its name. All tensor values/dtypes/shapes verified identical.",
+      "experiment_source_path": "outputs/refiner_train_ME32_subset512_c128b12_rs012/refiner_step5000.pt"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__vqcond_ME32_b54f8_k256_train512__refiner_c192b16_rs016_lp40di30__vq_refiner_step5000.pt",
+      "original_bytes": 42592095,
+      "original_sha256": "3a997e1bf5e158511bfcd28c71433610f3bea92b0f7bbabdfc73e7e50dcf1075",
+      "release_bytes": 42600938,
+      "release_sha256": "69b8604554c97df6af0c6e50bebb9766d1a5fd7e9c51f8e151c11dd872a5fff6",
+      "preparation": "Local-path metadata normalized; unused __main__.train callback reference, if present, stored as its name. All tensor values/dtypes/shapes verified identical.",
+      "experiment_source_path": "outputs/vqcond_ME32_b54f8_k256_train512/refiner_c192b16_rs016_lp40di30/vq_refiner_step5000.pt"
+    },
+    {
+      "path": "hybrid69p893/models/outputs__vqcond_ME32_b64f8_k256_train512__refiner_c192b16_rs016_lp45di35__vq_refiner_step5000.pt",
+      "original_bytes": 42592095,
+      "original_sha256": "ead43eeba19071da8728b684724543e62ee196e8cfe25e542c12ecfc99080162",
+      "release_bytes": 42600938,
+      "release_sha256": "364feda6b109d0904588f7f7eb77edacddaa8158675809def54a2c776b0cc09a",
+      "preparation": "Local-path metadata normalized; unused __main__.train callback reference, if present, stored as its name. All tensor values/dtypes/shapes verified identical.",
+      "experiment_source_path": "outputs/vqcond_ME32_b64f8_k256_train512/refiner_c192b16_rs016_lp45di35/vq_refiner_step5000.pt"
+    }
+  ]
+}

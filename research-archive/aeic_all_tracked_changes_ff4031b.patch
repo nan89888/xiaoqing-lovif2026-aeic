@@ -1,0 +1,1192 @@
+diff --git a/src/AEIC_practical.py b/src/AEIC_practical.py
+index 50e18bf..89d7f39 100644
+--- a/src/AEIC_practical.py
++++ b/src/AEIC_practical.py
+@@ -14,6 +14,10 @@ class AEIC(OneStepDiffusionDecoder):
+         super().__init__(sd_path=sd_path, args=args)
+         self.add_unet_LoRA(lora_rank_unet=args.lora_rank_unet)
+         self.codec = PixelCodec(codec_type=args.codec_type)
++        self.codec.y_quant_step = float(getattr(args, "y_quant_step", 1.0))
++        if getattr(args, "big_encoder_50m", False):
++            from codec.base_module import AnalysisTransform_Big50M
++            self.codec.g_a = AnalysisTransform_Big50M()
+         self.load_AEIC_state_dict(args.codec_path, merge_LoRA=args.merge_LoRA)
+         self.set_inference_mode(args.compile_model)
+ 
+@@ -40,6 +44,8 @@ class AEIC(OneStepDiffusionDecoder):
+         pretrained_codec_keys = pretrained_weights["state_dict_codec"].keys()
+         for k in codec_random_weights.keys():
+             if k not in pretrained_codec_keys:
++                if k.startswith("y_adapter."):
++                    continue
+                 raise KeyError(f"Expecting codec key: {k} not found in provided state_dict_codec")
+             codec_random_weights[k] = pretrained_weights["state_dict_codec"][k]
+         self.codec.load_state_dict(codec_random_weights)
+@@ -103,4 +109,4 @@ class AEIC(OneStepDiffusionDecoder):
+         end_time = time.time()
+         dec_time = end_time - start_time
+         return x_hat, dec_time
+-    
+\ No newline at end of file
++    
+diff --git a/src/AEIC_trainer.py b/src/AEIC_trainer.py
+index 4bf36ce..7ce6975 100644
+--- a/src/AEIC_trainer.py
++++ b/src/AEIC_trainer.py
+@@ -14,6 +14,10 @@ class AEIC_ME_Trainer(OneStepDiffusionDecoder):
+         super().__init__(sd_path=sd_path, args=args)
+         self.add_unet_LoRA(lora_rank_unet=args.lora_rank_unet)
+         self.codec = PixelCodec_ME_Trainer()
++        if getattr(args, "big_encoder_50m", False):
++            from codec.base_module import AnalysisTransform_Big50M
++            self.codec.g_a = AnalysisTransform_Big50M()
++            self.allow_partial_codec_load = True
+         if args.codec_path is not None:
+             self.load_AEIC_state_dict(args.codec_path)
+         self.set_training_mode(args.compile_model)
+@@ -46,9 +50,15 @@ class AEIC_ME_Trainer(OneStepDiffusionDecoder):
+         codec_random_weights = self.codec.state_dict()
+         pretrained_codec_keys = pretrained_weights["state_dict_codec"].keys()
+         for k in codec_random_weights.keys():
+-            if k not in pretrained_codec_keys:
+-                raise KeyError(f"Expecting codec key: {k} not found in provided state_dict_codec")
+-            codec_random_weights[k] = pretrained_weights["state_dict_codec"][k]
++            source_key = k
++            if source_key not in pretrained_codec_keys and k.startswith("g_a.base."):
++                source_key = "g_a." + k[len("g_a.base."):]
++            if source_key in pretrained_codec_keys and codec_random_weights[k].shape == pretrained_weights["state_dict_codec"][source_key].shape:
++                codec_random_weights[k] = pretrained_weights["state_dict_codec"][source_key]
++            elif k.startswith("y_adapter."):
++                pass
++            elif not getattr(self, "allow_partial_codec_load", False):
++                raise KeyError(f"Expecting codec key with matching shape: {k} not found in provided state_dict_codec")
+         self.codec.load_state_dict(codec_random_weights)
+ 
+         unet_random_weights = self.unet.state_dict()
+@@ -61,10 +71,21 @@ class AEIC_ME_Trainer(OneStepDiffusionDecoder):
+         self.unet.load_state_dict(unet_random_weights)
+ 
+ 
+-    def forward(self, x, ori_h=None, ori_w=None):
++    def forward(self, x, ori_h=None, ori_w=None, return_aux=False, aux_decode_residual=False):
+         l_T, RateLossOutput, residual = self.codec(x, ori_h=ori_h, ori_w=ori_w)
+-        l_0 = self.unet(l_T) + residual
++        unet_out = self.unet(l_T)
++        l_0 = unet_out + residual
+         x_hat = self.vae.decoder(l_0).clamp(-1, 1)
++        if return_aux:
++            aux = {
++                "l_T": l_T,
++                "l_0": l_0,
++                "unet_out": unet_out,
++                "residual": residual,
++            }
++            if aux_decode_residual:
++                aux["residual_preview"] = self.vae.decoder(residual).clamp(-1, 1)
++            return x_hat, RateLossOutput, aux
+         return x_hat, RateLossOutput
+ 
+     
+@@ -73,4 +94,4 @@ class AEIC_ME_Trainer(OneStepDiffusionDecoder):
+         sd["state_dict_unet"] = {k: v for k, v in self.unet.state_dict().items() if "lora" in k or "conv_in" in k or "conv_out" in k}
+         sd["state_dict_codec"] = {k: v for k, v in self.codec.state_dict().items()}
+         torch.save(sd, outf)
+-    
+\ No newline at end of file
++    
+diff --git a/src/base_model.py b/src/base_model.py
+index e759c2e..6c97e98 100644
+--- a/src/base_model.py
++++ b/src/base_model.py
+@@ -2,6 +2,7 @@ import sys
+ sys.path.append("..")
+ 
+ import types
++from pathlib import Path
+ import torch
+ import torch.nn as nn
+ from peft import LoraConfig
+@@ -11,9 +12,9 @@ from my_utils.vaehook import VAEHook
+ 
+ from diffusers import AutoencoderKL, UNet2DConditionModel
+ from diffusers.models.autoencoders.vae import Decoder
+-from diffusers.models.unet_2d_blocks import CrossAttnDownBlock2D, CrossAttnUpBlock2D, DownBlock2D, UpBlock2D, UNetMidBlock2DCrossAttn
++from diffusers.models.unets.unet_2d_blocks import CrossAttnDownBlock2D, CrossAttnUpBlock2D, DownBlock2D, UpBlock2D, UNetMidBlock2DCrossAttn
+ from diffusers.models.resnet import ResnetBlock2D
+-from diffusers.models.transformer_2d import Transformer2DModel
++from diffusers.models.transformers.transformer_2d import Transformer2DModel
+ from diffusers.models.attention import BasicTransformerBlock
+ 
+ from custom_forward import MyUNet2DConditionModel_SD_forward, \
+@@ -30,19 +31,31 @@ from custom_forward import MyUNet2DConditionModel_SD_forward, \
+     my_lora_fwd
+ 
+ 
++
++
++def _load_pruned_runtime_state(module, path):
++    state = torch.load(path, map_location="cpu")
++    module.load_state_dict(state, strict=True)
++
+ class OneStepDiffusionDecoder(nn.Module):
+     def __init__(self, sd_path=None, args=None):
+         super().__init__()
+ 
++        pruned_runtime = Path(sd_path) / "pruned_unet_fp16.pt" if sd_path is not None else None
++        use_pruned_runtime = pruned_runtime is not None and pruned_runtime.exists()
++
+         # Stable Diffusion Models
+-        vae = AutoencoderKL.from_pretrained(sd_path, subfolder="vae")
+-        unet = UNet2DConditionModel.from_pretrained(sd_path, subfolder="unet")
++        if use_pruned_runtime:
++            vae = AutoencoderKL.from_config(str(Path(sd_path) / "vae_config.json"))
++            unet = UNet2DConditionModel.from_config(str(Path(sd_path) / "unet_config.json"))
++        else:
++            vae = AutoencoderKL.from_pretrained(sd_path, subfolder="vae")
++            unet = UNet2DConditionModel.from_pretrained(sd_path, subfolder="unet")
+         unet.to("cuda")
+         vae.to("cuda")
+         self.unet, self.vae = unet, vae
+ 
+         # Prune VAE Decoder
+-        ckpt_halfdecoder = torch.load(args.vae_decoder_path, weights_only=False)
+         decoder = Decoder(
+             in_channels=4,
+             out_channels=3,
+@@ -54,12 +67,14 @@ class OneStepDiffusionDecoder(nn.Module):
+             norm_type="group",
+             mid_block_add_attention=True
+             ).to('cuda')
+-        decoder_ckpt = {}
+-        for k, v in ckpt_halfdecoder["state_dict"].items():
+-            if "decoder" in k:
+-                new_k = k.replace("decoder.", "")
+-                decoder_ckpt[new_k] = v
+-        decoder.load_state_dict(decoder_ckpt, strict=True)
++        if not use_pruned_runtime:
++            ckpt_halfdecoder = torch.load(args.vae_decoder_path, weights_only=False)
++            decoder_ckpt = {}
++            for k, v in ckpt_halfdecoder["state_dict"].items():
++                if "decoder" in k:
++                    new_k = k.replace("decoder.", "")
++                    decoder_ckpt[new_k] = v
++            decoder.load_state_dict(decoder_ckpt, strict=True)
+         self.vae.decoder = decoder
+         self.vae.decoder.forward = types.MethodType(MyVAEDecoder_SD_forward, self.vae.decoder)
+         del self.vae.encoder, self.vae.quant_conv, self.vae.post_quant_conv
+@@ -111,6 +126,10 @@ class OneStepDiffusionDecoder(nn.Module):
+         temp_layer.bias.data = self.vae.decoder.conv_in.bias.data
+         self.vae.decoder.conv_in = temp_layer
+ 
++        self.pruned_runtime_path = Path(sd_path) if use_pruned_runtime else None
++        if use_pruned_runtime:
++            _load_pruned_runtime_state(self.vae.decoder, Path(sd_path) / "pruned_vae_decoder_fp16.pt")
++
+         if args.use_tiled_unet:
+             self.forbid_tiled_unet = False
+             self.latent_tiled_size = args.latent_tiled_size
+diff --git a/src/codec/base_entropy_coder.py b/src/codec/base_entropy_coder.py
+index f8de38f..a6c4c0b 100644
+--- a/src/codec/base_entropy_coder.py
++++ b/src/codec/base_entropy_coder.py
+@@ -90,12 +90,12 @@ class LowerBound(nn.Module):
+ 
+ 
+ class EntropyCoder():
+-    def __init__(self, ec_thread=True):
++    def __init__(self, ec_thread=True, stream_part=2):
+         super().__init__()
+ 
+         from .MLCodec_rans import RansEncoder, RansDecoder
+-        self.encoder = RansEncoder(ec_thread, 2)
+-        self.decoder = RansDecoder(2)
++        self.encoder = RansEncoder(ec_thread, stream_part)
++        self.decoder = RansDecoder(stream_part)
+ 
+     @staticmethod
+     def pmf_to_quantized_cdf(pmf, precision=16):
+@@ -149,7 +149,8 @@ class EntropyCoder():
+         return self.encoder.get_encoded_stream().tobytes()
+ 
+     def set_stream(self, stream):
+-        self.decoder.set_stream((np.frombuffer(stream, dtype=np.uint8)))
++        self._decoder_stream = np.frombuffer(stream, dtype=np.uint8).copy()
++        self.decoder.set_stream(self._decoder_stream)
+ 
+     def decode_stream(self, indexes, cdf_group_index):
+         rv = self.decoder.decode_stream(indexes.to(torch.int16).cpu().numpy(), cdf_group_index)
+diff --git a/src/codec/base_module.py b/src/codec/base_module.py
+index 60600dd..9cd2612 100644
+--- a/src/codec/base_module.py
++++ b/src/codec/base_module.py
+@@ -158,6 +158,36 @@ class AnalysisTransform_Moderate(nn.Module):
+         return x
+     
+ 
++
++
++class AnalysisTransform_Big50M(nn.Module):
++    def __init__(self, extra_blocks=76):
++        super().__init__()
++        self.base = AnalysisTransform_Moderate()
++        self.extra = nn.Sequential(*[StarBlock(320) for _ in range(extra_blocks)])
++
++    def forward(self, x):
++        return self.extra(self.base(x))
++
++
++class LatentResidualAdapter(nn.Module):
++    def __init__(self, channels=320, hidden=80, init_scale=0.05):
++        super().__init__()
++        self.scale = nn.Parameter(torch.tensor(float(init_scale)))
++        self.net = nn.Sequential(
++            nn.Conv2d(channels, hidden, 1),
++            nn.GELU(),
++            nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden),
++            nn.GELU(),
++            nn.Conv2d(hidden, channels, 1),
++        )
++        nn.init.zeros_(self.net[-1].weight)
++        nn.init.zeros_(self.net[-1].bias)
++
++    def forward(self, y):
++        return y + self.scale * self.net(y)
++
++
+ class SynthesisTransform(nn.Module):
+     def __init__(self, in_ch) -> None:
+         super().__init__()
+@@ -278,4 +308,4 @@ class TargetRateModule(nn.Module):
+             quantized_latent_bpp=quantized_latent_bpp.detach().mean(),
+             quantized_hyper_bpp=quantized_hyper_bpp.detach().mean(),
+         )
+-    
+\ No newline at end of file
++    
+diff --git a/src/codec/codec_practical.py b/src/codec/codec_practical.py
+index e6bb395..3500f15 100644
+--- a/src/codec/codec_practical.py
++++ b/src/codec/codec_practical.py
+@@ -21,6 +21,7 @@ def ste_round(x):
+ class PixelCodec(nn.Module):
+     def __init__(self, codec_type = "AEIC-ME"):
+         super().__init__()
++        self.y_quant_step = 1.0
+ 
+         if codec_type == "AEIC-ME":
+             M = 320
+@@ -36,6 +37,7 @@ class PixelCodec(nn.Module):
+             raise NotImplementedError("Codec type not supported")
+ 
+         self.y_channel = M
++        self.y_adapter = LatentResidualAdapter(M)
+         self.g_s = SynthesisTransform(in_ch=M)
+         self.h_a = HyperAnalysis(M=M)
+         self.h_s = HyperSynthesis(M=M)
+@@ -63,7 +65,7 @@ class PixelCodec(nn.Module):
+         z_h, z_w = math.ceil(y_h / 4), math.ceil(y_w / 4)
+         pad_h, pad_w = z_h * 4 - y_h, z_w * 4 - y_w
+ 
+-        y = self.g_a(x)
++        y = self.y_adapter(self.g_a(x))
+ 
+         y_padded = F.pad(y, pad=(0, pad_w, 0, pad_h), mode='constant')
+         z = self.h_a(y_padded)
+@@ -186,7 +188,8 @@ class PixelCodec(nn.Module):
+     @torch.no_grad()
+     def compress_group(self, y_q_list, scales_list):
+         y = [self.sequeeze(y_q) for y_q in y_q_list]
+-        scales = [self.sequeeze(scales) for scales in scales_list]
++        q = float(getattr(self, "y_quant_step", 1.0))
++        scales = [self.sequeeze(scales) / q for scales in scales_list]
+         y = [t.flatten() for t in y]
+         scales = [t.flatten() for t in scales]
+         sizes = [t.numel() for t in scales]
+@@ -200,12 +203,13 @@ class PixelCodec(nn.Module):
+     
+ 
+     def decompress_group_with_mask(self, scales, means, mask):
++        q = float(getattr(self, "y_quant_step", 1.0))
+         scales_squeeze = self.sequeeze(scales)
+         means_squeeze = self.sequeeze(means)
+-        indexes = self.my_build_indexes(scales_squeeze)
++        indexes = self.my_build_indexes(scales_squeeze / q)
+         latent_squeeze_q = self.entropy_coder.decode_stream(indexes.reshape(-1), self.y_cdf_group_index)
+         latent_squeeze_q = latent_squeeze_q.reshape(scales_squeeze.shape).to(scales_squeeze.device).to(scales_squeeze.dtype)
+-        latent_hat = self.unsequeeze_with_mask(latent_squeeze_q + means_squeeze, mask)
++        latent_hat = self.unsequeeze_with_mask(latent_squeeze_q * q + means_squeeze, mask)
+         return latent_hat
+     
+ 
+@@ -230,7 +234,7 @@ class PixelCodec(nn.Module):
+ 
+         indexes, z_offset = self.entropy_bottleneck.get_compress_info([1, self.y_channel // 2, z_h, z_w])
+ 
+-        y = self.g_a(x)
++        y = self.y_adapter(self.g_a(x))
+         y_padded = F.pad(y, (0, pad_w, 0, pad_h), mode="reflect")
+         z = self.h_a(y_padded)
+         z_q = torch.round(z - z_offset)
+@@ -249,12 +253,13 @@ class PixelCodec(nn.Module):
+             means = means_supp * mask
+             scales = scales_supp * mask
+             y_part = y * mask
+-            y_q = torch.round(y_part - means)
++            q = float(getattr(self, "y_quant_step", 1.0))
++            y_q = torch.round((y_part - means) / q)
+             y_q_list.append(y_q)
+             scales_list.append(scales)
+ 
+             if i < 3:
+-                y_hat = y_q + means
++                y_hat = y_q * q + means
+                 base = base * (1 - mask) + y_hat
+ 
+         y_q_0, y_q_1, y_q_2, y_q_3, indexes_0, indexes_1, indexes_2, indexes_3 = self.compress_group(y_q_list, scales_list)
+@@ -307,7 +312,7 @@ class PixelCodec(nn.Module):
+         updated = self.gaussian_conditional.update_scale_table(scale_table, force=force)
+         updated |= self.entropy_bottleneck.update(force=force)
+ 
+-        self.entropy_coder = EntropyCoder()
++        self.entropy_coder = EntropyCoder(ec_thread=False, stream_part=1)
+ 
+         self.y_quantized_cdf = self.gaussian_conditional.quantized_cdf.cpu().numpy()
+         self.y_cdf_length = self.gaussian_conditional.cdf_length.reshape(-1).int().cpu().numpy()
+diff --git a/src/codec/codec_trainer.py b/src/codec/codec_trainer.py
+index 49bf599..488e37b 100644
+--- a/src/codec/codec_trainer.py
++++ b/src/codec/codec_trainer.py
+@@ -17,6 +17,7 @@ class PixelCodec_ME_Trainer(nn.Module):
+         context_dim = M * 3
+         context_depth = 4
+         self.g_a = AnalysisTransform_Moderate()
++        self.y_adapter = LatentResidualAdapter(M)
+         self.g_s = SynthesisTransform(in_ch=M)
+         self.h_a = HyperAnalysis(M=M)
+         self.h_s = HyperSynthesis(M=M)
+@@ -35,7 +36,7 @@ class PixelCodec_ME_Trainer(nn.Module):
+ 
+     def forward(self, x, ori_h=None, ori_w=None):
+         
+-        y = self.g_a(x)
++        y = self.y_adapter(self.g_a(x))
+         z = self.h_a(y)
+ 
+         _, z_likelihoods = self.entropy_bottleneck(z)
+diff --git a/src/compress.py b/src/compress.py
+index cc366cd..ddb672c 100644
+--- a/src/compress.py
++++ b/src/compress.py
+@@ -28,7 +28,7 @@ def compress_one_image(net, stream_path, img_name, x, ori_h, ori_w):
+     enc_time = net.compress(x)
+     strings = net.codec.entropy_coder.get_encoded_stream()
+     if not os.path.exists(stream_path): os.makedirs(stream_path)
+-    output = os.path.join(stream_path, img_name)
++    output = os.path.join(stream_path, img_name + ".bin")
+     with Path(output).open("wb") as f:
+         my_write_body(f, [ori_h, ori_w], strings)
+     size = filesize(output)
+@@ -37,7 +37,7 @@ def compress_one_image(net, stream_path, img_name, x, ori_h, ori_w):
+ 
+ 
+ def decompress_one_image(net, stream_path, img_name):
+-    output = os.path.join(stream_path, img_name)
++    output = os.path.join(stream_path, img_name + ".bin")
+     with Path(output).open("rb") as f:
+         strings, shape = my_read_body(f)
+     ori_h, ori_w = shape
+@@ -71,7 +71,7 @@ def main(args):
+         if is_xformers_available():
+             net.unet.enable_xformers_memory_efficient_attention()
+         else:
+-            raise ValueError("xformers is not available, please install it by running `pip install xformers`")
++            print("[Warning] xformers is not available; continuing without memory-efficient attention.")
+ 
+     transform = transforms.Compose([
+         transforms.ToTensor(),
+@@ -109,7 +109,11 @@ def main(args):
+             try:
+                 if args.use_practical_entropy_coding:
+                     bpp, enc_time = compress_one_image(net, args.bin_path, fname, img_padded, ori_h, ori_w)
+-                    out_img, dec_time = decompress_one_image(net, args.bin_path, fname)
++                    if args.encode_only:
++                        out_img = None
++                        dec_time = 0
++                    else:
++                        out_img, dec_time = decompress_one_image(net, args.bin_path, fname)
+                 else:
+                     x_hat, RateLossOutput = net.inference(img_padded, ori_h=ori_h, ori_w=ori_w)
+                     x_hat = x_hat[:, :, :ori_h, :ori_w]
+@@ -125,20 +129,21 @@ def main(args):
+                 else:
+                     raise
+ 
+-        output_pil = transforms.ToPILImage()(out_img[0].clamp(0.0, 1.0))
+-
+         print('[BPP]', bpp)
+         R.append(bpp)
+         if id >=4:
+             ENC.append(enc_time)
+             DEC.append(dec_time)
+ 
+-        if args.color_fix and ori_h * ori_w > 768 ** 2:
+-            img = (img * 0.5 + 0.5).float().cpu().detach()
+-            img_pil = transforms.ToPILImage()(img[0].clamp(0.0, 1.0))
+-            output_pil = adain_color_fix_quant(output_pil, img_pil, 16)
++        if out_img is not None:
++            output_pil = transforms.ToPILImage()(out_img[0].clamp(0.0, 1.0))
++
++            if args.color_fix and ori_h * ori_w > 768 ** 2:
++                img = (img * 0.5 + 0.5).float().cpu().detach()
++                img_pil = transforms.ToPILImage()(img[0].clamp(0.0, 1.0))
++                output_pil = adain_color_fix_quant(output_pil, img_pil, 16)
+ 
+-        output_pil.save(outf)
++            output_pil.save(outf)
+         torch.cuda.empty_cache()
+ 
+     print("\n========= AVG Results =========\n")
+diff --git a/src/cpp/py_rans/py_rans.cpp b/src/cpp/py_rans/py_rans.cpp
+index 39c5efb..51b601f 100644
+--- a/src/cpp/py_rans/py_rans.cpp
++++ b/src/cpp/py_rans/py_rans.cpp
+@@ -9,7 +9,7 @@
+ namespace py = pybind11;
+ 
+ RansEncoder::RansEncoder(bool multiThread, int streamPart) {
+-  bool useMultiThread = multiThread || streamPart > 1;
++  bool useMultiThread = multiThread;
+   for (int i = 0; i < streamPart; i++) {
+     if (useMultiThread) {
+       m_encoders.push_back(std::make_shared<RansEncoderLibMultiThread>());
+@@ -37,7 +37,7 @@ void RansEncoder::encode_with_indexes(const py::array_t<int16_t> &symbols,
+     auto copySize = sizeof(int16_t) * currSymbolSize;
+     auto vec_symbols = std::make_shared<std::vector<int16_t>>(currSymbolSize);
+     memcpy(vec_symbols->data(), symbols_ptr + currOffset, copySize);
+-    auto vec_indexes = std::make_shared<std::vector<int16_t>>(eachSymbolSize);
++    auto vec_indexes = std::make_shared<std::vector<int16_t>>(currSymbolSize);
+     memcpy(vec_indexes->data(), indexes_ptr + currOffset, copySize);
+     m_encoders[i]->encode_with_indexes(vec_symbols, vec_indexes,
+                                        cdf_group_index);
+@@ -129,9 +129,9 @@ py::array_t<uint8_t> RansEncoder::get_encoded_stream() {
+     overhead += ((encoderNumber - 1) * perStreamHeader);
+   }
+ 
+-  py::array_t<uint8_t> stream(totalSize + overhead);
+-  py::buffer_info stream_buf = stream.request();
+-  uint8_t *stream_ptr = static_cast<uint8_t *>(stream_buf.ptr);
++  auto stream_vec = new std::vector<uint8_t>(totalSize + overhead);
++  uint8_t *stream_ptr = stream_vec->data();
++  memset(stream_ptr, 0, stream_vec->size());
+ 
+   uint8_t flag = static_cast<uint8_t>(((encoderNumber - 1) << 4) +
+                                       (perStreamHeader == 2 ? 1 : 0));
+@@ -152,7 +152,14 @@ py::array_t<uint8_t> RansEncoder::get_encoded_stream() {
+     memcpy(stream_ptr + offset, results[i].data(), nbytes);
+     offset += nbytes;
+   }
+-  return stream;
++
++  py::capsule free_when_done(stream_vec, [](void *p) {
++    delete reinterpret_cast<std::vector<uint8_t> *>(p);
++  });
++  return py::array_t<uint8_t>(
++      {static_cast<py::ssize_t>(stream_vec->size())},
++      {static_cast<py::ssize_t>(sizeof(uint8_t))},
++      stream_vec->data(), free_when_done);
+ }
+ 
+ void RansEncoder::reset() {
+@@ -169,14 +176,23 @@ RansDecoder::RansDecoder(int streamPart) {
+ 
+ void RansDecoder::set_stream(const py::array_t<uint8_t> &encoded) {
+   py::buffer_info encoded_buf = encoded.request();
++  if (encoded.size() < 1) {
++    throw std::runtime_error("Empty encoded rANS stream");
++  }
+   uint8_t flag = *(static_cast<uint8_t *>(encoded_buf.ptr));
+   int numberOfStreams = (flag >> 4) + 1;
++  if (numberOfStreams > static_cast<int>(m_decoders.size())) {
++    throw std::runtime_error("Encoded stream contains more rANS parts than decoder supports");
++  }
+ 
+   uint8_t perStreamSizeLength = (flag & 0x0f) == 1 ? 2 : 4;
+   std::vector<uint32_t> streamSizes;
+   int offset = 1;
+   int totalSize = 0;
+   for (int i = 0; i < numberOfStreams - 1; i++) {
++    if (offset + perStreamSizeLength > static_cast<int>(encoded.size())) {
++      throw std::runtime_error("Truncated rANS stream header");
++    }
+     uint8_t *currPos = static_cast<uint8_t *>(encoded_buf.ptr) + offset;
+     if (perStreamSizeLength == 2) {
+       uint16_t streamSize = *(reinterpret_cast<uint16_t *>(currPos));
+@@ -190,8 +206,15 @@ void RansDecoder::set_stream(const py::array_t<uint8_t> &encoded) {
+       totalSize += streamSize;
+     }
+   }
+-  streamSizes.push_back(static_cast<int>(encoded.size()) - offset - totalSize);
++  int lastStreamSize = static_cast<int>(encoded.size()) - offset - totalSize;
++  if (lastStreamSize < 0) {
++    throw std::runtime_error("Invalid rANS stream sizes");
++  }
++  streamSizes.push_back(lastStreamSize);
+   for (int i = 0; i < numberOfStreams; i++) {
++    if (offset + static_cast<int>(streamSizes[i]) > static_cast<int>(encoded.size())) {
++      throw std::runtime_error("Truncated rANS stream payload");
++    }
+     auto stream = std::make_shared<std::vector<uint8_t>>(streamSizes[i]);
+     memcpy(stream->data(), static_cast<uint8_t *>(encoded_buf.ptr) + offset,
+            streamSizes[i]);
+@@ -226,18 +249,24 @@ RansDecoder::decode_stream(const py::array_t<int16_t> &indexes,
+     results.push_back(result);
+   }
+ 
+-  py::array_t<int16_t> output(indexes.size());
+-  py::buffer_info buf = output.request();
++  auto output_vec = new std::vector<int16_t>(indexes.size());
+   int offset = 0;
+   for (int i = 0; i < decoderNum; i++) {
+     std::vector<int16_t> result = results[i].get();
+     int resultSize = static_cast<int>(result.size());
+     int copySize = sizeof(int16_t) * resultSize;
+-    memcpy(static_cast<int16_t *>(buf.ptr) + offset, result.data(), copySize);
++    memcpy(output_vec->data() + offset, result.data(), copySize);
+     offset += resultSize;
+   }
+ 
+-  return output;
++
++  py::capsule free_when_done(output_vec, [](void *p) {
++    delete reinterpret_cast<std::vector<int16_t> *>(p);
++  });
++  return py::array_t<int16_t>(
++      {static_cast<py::ssize_t>(output_vec->size())},
++      {static_cast<py::ssize_t>(sizeof(int16_t))},
++      output_vec->data(), free_when_done);
+ }
+ 
+ int RansDecoder::add_cdf(const py::array_t<int32_t> &cdfs,
+diff --git a/src/cpp/rans/rans.cpp b/src/cpp/rans/rans.cpp
+index 14dc46c..07f2d21 100644
+--- a/src/cpp/rans/rans.cpp
++++ b/src/cpp/rans/rans.cpp
+@@ -162,11 +162,14 @@ void RansEncoderLib::flush() {
+   RansState rans;
+   RansEncInit(&rans);
+ 
+-  std::vector<uint8_t> output(_syms.size()); // too much space ?
++  // rANS writes backwards and flushes a 4-byte final state. Some streams can
++  // also emit more than one byte for bypass symbols, so reserve a small guard.
++  std::vector<uint8_t> output(_syms.size() * 2 + 64);
+   uint8_t *ptrEnd = output.data() + output.size();
+   uint8_t *ptr = ptrEnd;
+   assert(ptr != nullptr);
+ 
++
+   for (auto it = _syms.rbegin(); it < _syms.rend(); it++) {
+     const RansSymbol sym = *it;
+ 
+diff --git a/src/finetune.py b/src/finetune.py
+index 4c99f33..c0bf8ad 100644
+--- a/src/finetune.py
++++ b/src/finetune.py
+@@ -1,14 +1,15 @@
+ import os
++from pathlib import Path
+ import gc
+ import lpips
+ import numpy as np
+ import transformers
+ from tqdm.auto import tqdm
+ from accelerate import Accelerator
+-from compressai.datasets import ImageFolder
+ 
+ import torch
+ import torch.utils.checkpoint
++import torch.nn.functional as F
+ from torchvision import transforms
+ from torch.utils.data import DataLoader
+ from torchmetrics.image import LearnedPerceptualImagePatchSimilarity
+@@ -21,6 +22,17 @@ from my_utils.training_utils import *
+ from oc_losses.oc_ea_dists_loss import OCEADISTSLoss
+ import vision_aided_loss
+ 
++
++def parse_stage_value(value):
++    if isinstance(value, str):
++        try:
++            return float(value)
++        except ValueError:
++            return value
++    if isinstance(value, (int, float)):
++        return float(value)
++    return value
++
+         
+ def main(args):
+ 
+@@ -43,18 +55,18 @@ def main(args):
+         transformers.utils.logging.set_verbosity_error()
+         diffusers.utils.logging.set_verbosity_error()
+ 
+-    train_dataset = H5Dataset(
+-        args.train_dataset_2K,
+-        transform=transforms.Compose([
+-            transforms.ToPILImage(),
+-            transforms.RandomCrop(cfg["train_patch_size"]),
+-            transforms.RandomHorizontalFlip(),
+-            transforms.RandomVerticalFlip(),
+-            transforms.ToTensor(),
+-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+-        ])
+-    )
+-    test_dataset = ImageFolder(args.test_dataset, split="Kodak",
++    train_steps = [
++        transforms.RandomCrop(cfg["train_patch_size"]),
++        transforms.RandomHorizontalFlip(),
++        transforms.RandomVerticalFlip(),
++        transforms.ToTensor(),
++        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
++    ]
++    if not Path(args.train_dataset_2K).is_dir():
++        train_steps.insert(0, transforms.ToPILImage())
++    train_transform = transforms.Compose(train_steps)
++    train_dataset = ImageDirectoryDataset(args.train_dataset_2K, transform=train_transform, min_size=cfg["train_patch_size"]) if Path(args.train_dataset_2K).is_dir() else H5Dataset(args.train_dataset_2K, transform=train_transform)
++    test_dataset = ImageDirectoryDataset(args.test_dataset,
+         transform=transforms.Compose([
+             transforms.ToTensor(),
+             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+@@ -84,51 +96,133 @@ def main(args):
+         os.makedirs(os.path.join(args.output_dir, "eval"), exist_ok=True)
+     if is_xformers_available():
+         net.unet.enable_xformers_memory_efficient_attention()
+-    else:
+-        raise ValueError("xformers is not available, please install it by running `pip install xformers`")
++    elif accelerator.is_main_process:
++        print("[Warning] xformers is not available; continuing without memory-efficient attention.")
+     if args.gradient_checkpointing:
+         net.unet.enable_gradient_checkpointing()
+     if args.allow_tf32:
+         torch.backends.cuda.matmul.allow_tf32 = True
+ 
+-    net_disc = vision_aided_loss.Discriminator(cv_type='dinov3', output_type='conv_multi_level', loss_type="multilevel_sigmoid_s", device="cuda")
+-    net_disc = net_disc.cuda()
+-    net_disc.requires_grad_(True)
+-    net_disc.cv_ensemble.requires_grad_(False)
+-    net_disc.train()
++    use_clip = float(cfg["base"].get("lambda_clip", 0.0)) > 0.0
++    use_adv = float(cfg["base"].get("lambda_adv", 0.0)) > 0.0
++    if use_adv:
++        net_disc = vision_aided_loss.Discriminator(cv_type='dinov3', output_type='conv_multi_level', loss_type="multilevel_sigmoid_s", device="cuda")
++        net_disc = net_disc.cuda()
++        net_disc.requires_grad_(True)
++        net_disc.cv_ensemble.requires_grad_(False)
++        net_disc.train()
++    else:
++        net_disc = None
+ 
+     net_dists = OCEADISTSLoss(device=accelerator.device)
+     alex_lpips = LearnedPerceptualImagePatchSimilarity(normalize=True).cuda()
+     alex_lpips.requires_grad_(False)
+-    net_clip = CLIPLoss().cuda()
++    net_clip = CLIPLoss().cuda() if use_clip else None
++
++    trainable_scope = cfg.get("trainable_scope", "all")
++    if trainable_scope == "encoder_only":
++        net.requires_grad_(False)
++        for module_name in ["g_a", "h_a"]:
++            getattr(net.codec, module_name).requires_grad_(True)
++        if accelerator.is_main_process:
++            trainable_names = [n for n, p in net.named_parameters() if p.requires_grad]
++            print(f"[Trainable Scope] encoder_only: {len(trainable_names)} tensors")
++            for name in trainable_names[:40]:
++                print(f"  trainable: {name}")
++            if len(trainable_names) > 40:
++                print(f"  ... {len(trainable_names) - 40} more")
++    elif trainable_scope == "encoder_hs":
++        net.requires_grad_(False)
++        for module_name in ["g_a", "h_a", "h_s"]:
++            getattr(net.codec, module_name).requires_grad_(True)
++        if accelerator.is_main_process:
++            trainable_names = [n for n, p in net.named_parameters() if p.requires_grad]
++            trainable_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
++            print(f"[Trainable Scope] encoder_hs: {len(trainable_names)} tensors, {trainable_params} params")
++            for name in trainable_names[:40]:
++                print(f"  trainable: {name}")
++            if len(trainable_names) > 40:
++                print(f"  ... {len(trainable_names) - 40} more")
++    elif trainable_scope == "encoder_hs_adapter":
++        net.requires_grad_(False)
++        for module_name in ["g_a", "h_a", "h_s", "adapter_in", "adapter_out"]:
++            getattr(net.codec, module_name).requires_grad_(True)
++        if accelerator.is_main_process:
++            trainable_names = [n for n, p in net.named_parameters() if p.requires_grad]
++            trainable_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
++            print(f"[Trainable Scope] encoder_hs_adapter: {len(trainable_names)} tensors, {trainable_params} params")
++            for name in trainable_names[:40]:
++                print(f"  trainable: {name}")
++            if len(trainable_names) > 40:
++                print(f"  ... {len(trainable_names) - 40} more")
++    elif trainable_scope == "latent_adapter":
++        net.requires_grad_(False)
++        net.codec.y_adapter.requires_grad_(True)
++        if accelerator.is_main_process:
++            trainable_names = [n for n, p in net.named_parameters() if p.requires_grad]
++            trainable_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
++            print(f"[Trainable Scope] latent_adapter: {len(trainable_names)} tensors, {trainable_params} params")
++            for name in trainable_names:
++                print(f"  trainable: {name}")
++    elif trainable_scope == "codec_only":
++        net.requires_grad_(False)
++        net.codec.requires_grad_(True)
++        if accelerator.is_main_process:
++            print("[Trainable Scope] codec_only")
++    elif trainable_scope != "all":
++        raise ValueError(f"Unknown trainable_scope: {trainable_scope}")
+ 
+     layers_to_opt = []
+     for p in net.parameters():
+         if p.requires_grad:
+             layers_to_opt.append(p)
++    if len(layers_to_opt) == 0:
++        raise RuntimeError("No trainable parameters selected")
+     optimizer = torch.optim.AdamW(layers_to_opt, lr=5e-5)
+-    optimizer_disc = torch.optim.AdamW(net_disc.parameters(), lr=2e-5)
++    optimizer_disc = torch.optim.AdamW(net_disc.parameters(), lr=2e-5) if use_adv else None
+     
+-    net, net_disc, optimizer, optimizer_disc, train_dataloader = accelerator.prepare(net, net_disc, optimizer, optimizer_disc, train_dataloader)
+-    net_dists, alex_lpips, net_clip = accelerator.prepare(net_dists, alex_lpips, net_clip)
++    if use_adv:
++        net, net_disc, optimizer, optimizer_disc, train_dataloader = accelerator.prepare(net, net_disc, optimizer, optimizer_disc, train_dataloader)
++    else:
++        net, optimizer, train_dataloader = accelerator.prepare(net, optimizer, train_dataloader)
++    if use_clip:
++        net_dists, alex_lpips, net_clip = accelerator.prepare(net_dists, alex_lpips, net_clip)
++    else:
++        net_dists, alex_lpips = accelerator.prepare(net_dists, alex_lpips)
+ 
+     weight_dtype = torch.float32
+     net.to(accelerator.device, dtype=weight_dtype)
+     net_dists.to(accelerator.device, dtype=weight_dtype)
+     alex_lpips.to(accelerator.device, dtype=weight_dtype)
+-    net_clip.to(accelerator.device, dtype=weight_dtype)
+-    net_disc.to(accelerator.device, dtype=weight_dtype)
+-    for name, module in net_disc.named_modules():
+-        if "attn" in name:
+-            module.fused_attn = False
+-
+-    progress_bar = tqdm(range(0, cfg["max_train_steps"]), initial=0, desc="Steps", disable=not accelerator.is_local_main_process,)
++    if use_clip:
++        net_clip.to(accelerator.device, dtype=weight_dtype)
++    if use_adv:
++        net_disc.to(accelerator.device, dtype=weight_dtype)
++        for name, module in net_disc.named_modules():
++            if "attn" in name:
++                module.fused_attn = False
++
++    initial_global_step = int(cfg.get("initial_global_step", 0))
++    total_steps_to_run = max(0, cfg["max_train_steps"] - initial_global_step)
++    progress_bar = tqdm(
++        range(0, total_steps_to_run),
++        initial=0,
++        desc="Steps",
++        disable=not accelerator.is_local_main_process,
++    )
+     mse_loss = torch.nn.MSELoss()
+ 
+-    global_step = 0
++    def lowpass_for_aux(tensor, downsample_factor):
++        if downsample_factor <= 1:
++            return tensor
++        size = tensor.shape[-2:]
++        pooled = F.avg_pool2d(tensor, kernel_size=downsample_factor, stride=downsample_factor)
++        return F.interpolate(pooled, size=size, mode="bilinear", align_corners=False)
++
++    global_step = initial_global_step
+     current_hp = {}
+     for k, v in cfg["base"].items():
+-        current_hp[k] = float(v)
++        current_hp[k] = parse_stage_value(v)
+     full_exp_name = cfg["exp_name"] + str(int(float(current_hp["lambda_rate"])))
+     while global_step <= cfg["max_train_steps"]:
+         for batch in train_dataloader:
+@@ -139,26 +233,67 @@ def main(args):
+                     if k in ["name", "end_step"]:
+                         current_hp[k] = v
+                     else:
+-                        current_hp[k] = float(v)
++                        current_hp[k] = parse_stage_value(v)
+                 for param_group in optimizer.param_groups:
+                     param_group["lr"] = current_hp["lr"]
+                 if accelerator.is_main_process:
+                     print(f"[Stage Switch] Step {global_step} -> {current_hp}")
+-            l_acc = [net, net_disc]
++            l_acc = [net, net_disc] if use_adv else [net]
+ 
+             with accelerator.accumulate(*l_acc):
+-                x_hat, RateLossOutput = net(batch, ori_h=cfg["train_patch_size"], ori_w=cfg["train_patch_size"])
++                use_aux_preview = current_hp.get("lambda_aux_preview", 0.0) > 0.0
++                if use_aux_preview:
++                    x_hat, RateLossOutput, aux_output = net(
++                        batch,
++                        ori_h=cfg["train_patch_size"],
++                        ori_w=cfg["train_patch_size"],
++                        return_aux=True,
++                        aux_decode_residual=True,
++                    )
++                else:
++                    x_hat, RateLossOutput = net(batch, ori_h=cfg["train_patch_size"], ori_w=cfg["train_patch_size"])
++                    aux_output = {}
+                 x = batch.detach().float()
+                 x_hat = x_hat.float()
+ 
+                 loss_l2 = mse_loss(x_hat, x)
+                 loss_dists = net_dists(x_hat, x).mean()
+-                loss_clip = net_clip(x_hat, x)
+-                loss_adv = net_disc(x_hat, for_G=True).mean()
+-
+-                loss = RateLossOutput.rate_loss * current_hp["lambda_rate"] \
++                if current_hp.get("lambda_lpips", 0.0) > 0.0:
++                    loss_lpips_train = alex_lpips(
++                        (x_hat * 0.5 + 0.5).clamp(0.0, 1.0),
++                        (x * 0.5 + 0.5).clamp(0.0, 1.0),
++                    )
++                else:
++                    loss_lpips_train = torch.zeros((), device=accelerator.device)
++                loss_clip = net_clip(x_hat, x) if use_clip else torch.zeros((), device=accelerator.device)
++                loss_adv = net_disc(x_hat, for_G=True).mean() if use_adv else torch.zeros((), device=accelerator.device)
++                if use_aux_preview:
++                    aux_preview = aux_output["residual_preview"].float()
++                    aux_downsample = int(current_hp.get("aux_downsample", 8.0))
++                    loss_aux_preview = mse_loss(
++                        lowpass_for_aux(aux_preview, aux_downsample),
++                        lowpass_for_aux(x, aux_downsample),
++                    )
++                else:
++                    loss_aux_preview = torch.zeros((), device=accelerator.device)
++
++                rate_loss_mode = str(current_hp.get("rate_loss_mode", cfg["base"].get("rate_loss_mode", "plain")))
++                if rate_loss_mode == "hinge":
++                    rate_target = float(current_hp.get("rate_target", cfg["base"].get("rate_target", 0.008)))
++                    rate_margin = float(current_hp.get("rate_margin", cfg["base"].get("rate_margin", 0.0)))
++                    rate_term = torch.relu(RateLossOutput.rate_loss - (rate_target - rate_margin))
++                    if current_hp.get("rate_hinge_square", cfg["base"].get("rate_hinge_square", 0.0)) > 0.0:
++                        rate_term = rate_term * rate_term
++                elif rate_loss_mode == "plain":
++                    rate_term = RateLossOutput.rate_loss
++                else:
++                    raise ValueError(f"Unknown rate_loss_mode: {rate_loss_mode}")
++
++                loss = rate_term * current_hp["lambda_rate"] \
+                      + loss_l2 * current_hp["lambda_l2"] \
+                      + loss_dists * current_hp["lambda_dists"] \
++                     + loss_lpips_train * current_hp.get("lambda_lpips", 0.0) \
++                     + loss_aux_preview * current_hp.get("lambda_aux_preview", 0.0) \
+                      + loss_clip * current_hp["lambda_clip"] \
+                      + loss_adv * current_hp["lambda_adv"]
+ 
+@@ -168,19 +303,20 @@ def main(args):
+                 optimizer.step()
+                 optimizer.zero_grad()
+ 
+-                loss_real = net_disc(x.detach(), for_real=True).mean() * current_hp["lambda_adv"]
+-                accelerator.backward(loss_real)
+-                if accelerator.sync_gradients:
+-                    accelerator.clip_grad_norm_(net_disc.parameters(), cfg["max_grad_norm"])
+-                optimizer_disc.step()
+-                optimizer_disc.zero_grad()
+-                
+-                loss_fake = net_disc(x_hat.detach(), for_real=False).mean() * current_hp["lambda_adv"]
+-                accelerator.backward(loss_fake)
+-                if accelerator.sync_gradients:
+-                    accelerator.clip_grad_norm_(net_disc.parameters(), cfg["max_grad_norm"])
+-                optimizer_disc.step()
+-                optimizer_disc.zero_grad()
++                if use_adv:
++                    loss_real = net_disc(x.detach(), for_real=True).mean() * current_hp["lambda_adv"]
++                    accelerator.backward(loss_real)
++                    if accelerator.sync_gradients:
++                        accelerator.clip_grad_norm_(net_disc.parameters(), cfg["max_grad_norm"])
++                    optimizer_disc.step()
++                    optimizer_disc.zero_grad()
++                    
++                    loss_fake = net_disc(x_hat.detach(), for_real=False).mean() * current_hp["lambda_adv"]
++                    accelerator.backward(loss_fake)
++                    if accelerator.sync_gradients:
++                        accelerator.clip_grad_norm_(net_disc.parameters(), cfg["max_grad_norm"])
++                    optimizer_disc.step()
++                    optimizer_disc.zero_grad()
+ 
+             if accelerator.sync_gradients:
+                 global_step += 1
+@@ -202,10 +338,13 @@ def main(args):
+                             assert B == 1, "Use batch size 1 for eval."
+ 
+                             with torch.no_grad():
+-                                x_hat, RateLossOutput = accelerator.unwrap_model(net)(batch_val, ori_h=H, ori_w=W)
++                                pad_h = ((H + 127) // 128) * 128 - H
++                                pad_w = ((W + 127) // 128) * 128 - W
++                                batch_val_padded = F.pad(batch_val, pad=(0, pad_w, 0, pad_h), mode="reflect")
++                                x_hat, RateLossOutput = accelerator.unwrap_model(net)(batch_val_padded, ori_h=H, ori_w=W)
+ 
+                                 x = (batch_val * 0.5 + 0.5).float()
+-                                x_hat = (x_hat * 0.5 + 0.5).float()
++                                x_hat = (x_hat[:, :, :H, :W] * 0.5 + 0.5).float()
+ 
+                                 loss_l2 = mse_loss(x_hat, x)
+                                 loss_psnr = 10 * (-torch.log(loss_l2) / np.log(10))
+@@ -231,7 +370,7 @@ def main(args):
+                                 val_count += 1
+ 
+                         logs = {}
+-                        assert len(l_psnr) == 24
++                        assert len(l_psnr) == len(test_dataset)
+                         logs["R"] = np.mean(l_rate)
+                         logs["Y"] = np.mean(l_y)
+                         logs["Z"] = np.mean(l_z)
+@@ -249,6 +388,14 @@ def main(args):
+                         torch.cuda.empty_cache()
+                         accelerator.log(logs, step=global_step)
+ 
++                if global_step >= cfg["max_train_steps"]:
++                    if accelerator.is_main_process:
++                        progress_bar.update(max(0, total_steps_to_run - progress_bar.n))
++                    break
++
++        if global_step >= cfg["max_train_steps"]:
++            break
++
+ 
+ if __name__ == "__main__":
+     args = parse_args_training()
+diff --git a/src/my_utils/testing_utils.py b/src/my_utils/testing_utils.py
+index adb8f78..0b77d9e 100644
+--- a/src/my_utils/testing_utils.py
++++ b/src/my_utils/testing_utils.py
+@@ -1,5 +1,14 @@
+ import argparse
+ 
++def str2bool(v):
++    if isinstance(v, bool):
++        return v
++    if str(v).lower() in ("yes", "true", "t", "1", "y"):
++        return True
++    if str(v).lower() in ("no", "false", "f", "0", "n"):
++        return False
++    raise argparse.ArgumentTypeError("Boolean value expected.")
++
+ def parse_args_testing(input_args=None):
+ 
+     parser = argparse.ArgumentParser()
+@@ -21,13 +30,16 @@ def parse_args_testing(input_args=None):
+     parser.add_argument("--lora_rank_unet", default=32, type=int)
+ 
+     # testing details
+-    parser.add_argument("--enable_xformers_memory_efficient_attention", default=True, help="Whether or not to use xformers.")
+-    parser.add_argument("--color_fix", default=True, help="Whether or not to use color fix.")
++    parser.add_argument("--enable_xformers_memory_efficient_attention", type=str2bool, default=True, help="Whether or not to use xformers.")
++    parser.add_argument("--color_fix", type=str2bool, default=True, help="Whether or not to use color fix.")
+     parser.add_argument("--use_practical_entropy_coding", default=False, action="store_true")
+-    parser.add_argument("--merge_LoRA", default=True)
+-    parser.add_argument("--compile_model", default=True)
+-    parser.add_argument("--use_tiled_vae", default=True)
+-    parser.add_argument("--use_tiled_unet", default=True)
++    parser.add_argument("--encode_only", default=False, action="store_true", help="Only write bitstreams; skip local decode/reconstruction.")
++    parser.add_argument("--merge_LoRA", type=str2bool, default=True)
++    parser.add_argument("--compile_model", type=str2bool, default=True)
++    parser.add_argument("--big_encoder_50m", type=str2bool, default=False)
++    parser.add_argument("--y_quant_step", type=float, default=1.0, help="Fixed practical y-latent quantization step. Values >1 reduce rate.")
++    parser.add_argument("--use_tiled_vae", type=str2bool, default=True)
++    parser.add_argument("--use_tiled_unet", type=str2bool, default=True)
+     parser.add_argument("--vae_decoder_tiled_size", type=int, default=160, help="Tiled VAE decoder tile size. Switch to 128 if OOM.")
+     parser.add_argument("--latent_tiled_size", type=int, default=96, help="Tiled latent tile size.")
+     parser.add_argument("--latent_tiled_overlap", type=int, default=32, help="Tiled latent tile overlap.")
+@@ -37,4 +49,4 @@ def parse_args_testing(input_args=None):
+     else:
+         args = parser.parse_args()
+ 
+-    return args
+\ No newline at end of file
++    return args
+diff --git a/src/my_utils/training_utils.py b/src/my_utils/training_utils.py
+index 6ebfbbf..b0bef7f 100644
+--- a/src/my_utils/training_utils.py
++++ b/src/my_utils/training_utils.py
+@@ -1,7 +1,21 @@
+-import h5py
++try:
++    import h5py
++except ImportError:
++    h5py = None
+ import yaml
+ import torch
+ import argparse
++
++def str2bool(v):
++    if isinstance(v, bool):
++        return v
++    if str(v).lower() in ("yes", "true", "t", "1", "y"):
++        return True
++    if str(v).lower() in ("no", "false", "f", "0", "n"):
++        return False
++    raise argparse.ArgumentTypeError("Boolean value expected.")
++from pathlib import Path
++from PIL import Image
+ from torchvision import transforms
+ from torch.utils.data.dataset import Dataset
+ from transformers import CLIPVisionModelWithProjection
+@@ -18,16 +32,17 @@ def parse_args_training(input_args=None):
+     # dataset
+     parser.add_argument("--train_dataset_2K", required=True, help="Path to 2K training dataset (hdf5)")
+     parser.add_argument("--train_dataset_LSDIR", help="Path to LSDIR training dataset (hdf5)")
+-    parser.add_argument("--test_dataset", required=True, help="Path to test dataset (Kodak)")
++    parser.add_argument("--test_dataset", required=True, help="Path to validation/test image directory")
+ 
+     # training details
+     parser.add_argument("--config", required=True)
+     parser.add_argument("--output_dir", required=True)
+     parser.add_argument("--lora_rank_unet", default=32, type=int)
+-    parser.add_argument("--compile_model", default=True)
+-    parser.add_argument("--use_tiled_vae", default=False)
+-    parser.add_argument("--use_tiled_unet", default=False)
+-    parser.add_argument("--allow_tf32", default=True)
++    parser.add_argument("--compile_model", type=str2bool, default=True)
++    parser.add_argument("--big_encoder_50m", type=str2bool, default=False)
++    parser.add_argument("--use_tiled_vae", type=str2bool, default=False)
++    parser.add_argument("--use_tiled_unet", type=str2bool, default=False)
++    parser.add_argument("--allow_tf32", type=str2bool, default=True)
+     parser.add_argument("--gradient_checkpointing", action="store_true")
+ 
+ 
+@@ -41,6 +56,8 @@ def parse_args_training(input_args=None):
+ 
+ class H5Dataset(Dataset):
+     def __init__(self, path, transform=None):
++        if h5py is None:
++            raise ImportError("h5py is required for H5Dataset. Use ImageDirectoryDataset or install h5py.")
+         self.file_path = path
+         self.dataset = h5py.File(self.file_path, 'r')
+         with h5py.File(self.file_path, 'r') as file:
+@@ -57,7 +74,38 @@ class H5Dataset(Dataset):
+ 
+     def __len__(self):
+         return len(self.keys)
+-    
++
++
++class ImageDirectoryDataset(Dataset):
++    def __init__(self, root, transform=None, min_size=None):
++        self.root = Path(root)
++        if not self.root.is_dir():
++            raise ValueError(f"Image directory does not exist: {self.root}")
++        patterns = ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG", "*.JPEG")
++        self.paths = sorted({p for pattern in patterns for p in self.root.glob(pattern)})
++        if len(self.paths) == 0:
++            raise ValueError(f"No images found in: {self.root}")
++        if min_size is not None:
++            kept = []
++            for path in self.paths:
++                with Image.open(path) as image:
++                    width, height = image.size
++                if width >= min_size and height >= min_size:
++                    kept.append(path)
++            self.paths = kept
++            if len(self.paths) == 0:
++                raise ValueError(f"No images at least {min_size}x{min_size} found in: {self.root}")
++        self.transform = transform
++
++    def __getitem__(self, index):
++        image = Image.open(self.paths[index]).convert("RGB")
++        if self.transform:
++            image = self.transform(image)
++        return image
++
++    def __len__(self):
++        return len(self.paths)
++
+ 
+ class CLIPLoss(torch.nn.Module):
+ 
+@@ -109,4 +157,4 @@ class StageManager:
+                     self.current_stage = stage
+                     return stage, True
+                 return self.current_stage, False
+-        return self.current_stage, False
+\ No newline at end of file
++        return self.current_stage, False
+diff --git a/src/pretrain.py b/src/pretrain.py
+index a0c2df9..861d03e 100644
+--- a/src/pretrain.py
++++ b/src/pretrain.py
+@@ -1,4 +1,5 @@
+ import os
++from pathlib import Path
+ import gc
+ import lpips
+ import numpy as np
+@@ -6,7 +7,6 @@ import transformers
+ 
+ from tqdm.auto import tqdm
+ from accelerate import Accelerator
+-from compressai.datasets import ImageFolder
+ 
+ import torch
+ import torch.utils.checkpoint
+@@ -42,20 +42,7 @@ def main(args):
+         transformers.utils.logging.set_verbosity_error()
+         diffusers.utils.logging.set_verbosity_error()
+ 
+-    train_dataset = H5Dataset(
+-        args.train_dataset_2K,
+-        transform=transforms.Compose([
+-            transforms.ToPILImage(),
+-            transforms.RandomCrop(cfg["train_patch_size"]),
+-            transforms.RandomHorizontalFlip(),
+-            transforms.RandomVerticalFlip(),
+-            transforms.ToTensor(),
+-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+-        ])
+-    )
+-    train_dataset_aux = H5Dataset(
+-        args.train_dataset_LSDIR,
+-        transform=transforms.Compose([
++    train_transform = transforms.Compose([
+             transforms.ToPILImage(),
+             transforms.RandomCrop(cfg["train_patch_size"]),
+             transforms.RandomHorizontalFlip(),
+@@ -63,9 +50,11 @@ def main(args):
+             transforms.ToTensor(),
+             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+         ])
+-    )
+-    train_dataset = ConcatDataset([train_dataset, train_dataset_aux])
+-    test_dataset = ImageFolder(args.test_dataset, split="Kodak",
++    train_dataset = ImageDirectoryDataset(args.train_dataset_2K, transform=train_transform) if Path(args.train_dataset_2K).is_dir() else H5Dataset(args.train_dataset_2K, transform=train_transform)
++    if args.train_dataset_LSDIR:
++        train_dataset_aux = ImageDirectoryDataset(args.train_dataset_LSDIR, transform=train_transform) if Path(args.train_dataset_LSDIR).is_dir() else H5Dataset(args.train_dataset_LSDIR, transform=train_transform)
++        train_dataset = ConcatDataset([train_dataset, train_dataset_aux])
++    test_dataset = ImageDirectoryDataset(args.test_dataset,
+         transform=transforms.Compose([
+             transforms.ToTensor(),
+             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+@@ -95,8 +84,8 @@ def main(args):
+         os.makedirs(os.path.join(args.output_dir, "eval"), exist_ok=True)
+     if is_xformers_available():
+         net.unet.enable_xformers_memory_efficient_attention()
+-    else:
+-        raise ValueError("xformers is not available, please install it by running `pip install xformers`")
++    elif accelerator.is_main_process:
++        print("[Warning] xformers is not available; continuing without memory-efficient attention.")
+     if args.gradient_checkpointing:
+         net.unet.enable_gradient_checkpointing()
+     if args.allow_tf32:
+@@ -215,7 +204,7 @@ def main(args):
+                                 val_count += 1
+ 
+                         logs = {}
+-                        assert len(l_psnr) == 24
++                        assert len(l_psnr) == len(test_dataset)
+                         logs["R"] = np.mean(l_rate)
+                         logs["Y"] = np.mean(l_y)
+                         logs["Z"] = np.mean(l_z)
